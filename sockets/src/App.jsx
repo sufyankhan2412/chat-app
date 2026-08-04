@@ -1,0 +1,88 @@
+import React, { useState } from "react";
+import {
+  BrowserRouter,
+  Routes,
+  Route,
+  Navigate,
+} from "react-router-dom";
+import { AuthProvider, useAuth } from "../context/Authcontext";
+import { SocketProvider } from "../context/Socketcontext";
+import Login from "../components/Login";
+import Signup from "../components/Signup";
+import Sidebar from "../components/Sidebar";
+import ChatWindow from "../components/ChatWindow";
+
+function SocketProviderWrapper({ children }) {
+  const { token, user } = useAuth();
+  return (
+    <SocketProvider token={token} user={user}>
+      {children}
+    </SocketProvider>
+  );
+}
+
+function ChatPage() {
+  const [activeContact, setActiveContact] = useState(null);
+  return (
+    <div className="chat-page">
+      <Sidebar activeContact={activeContact} onSelectContact={setActiveContact} />
+      <ChatWindow contact={activeContact} />
+    </div>
+  );
+}
+
+function PrivateRoute({ children }) {
+  const { user, loading } = useAuth();
+  if (loading) return <div className="loading-screen">Loading...</div>;
+  return user ? children : <Navigate to="/login" />;
+}
+
+function PublicRoute({ children }) {
+  const { user, loading } = useAuth();
+  if (loading) return <div className="loading-screen">Loading...</div>;
+  return user ? <Navigate to="/chat" /> : children;
+}
+
+function AppRoutes() {
+  return (
+    <Routes>
+      <Route
+        path="/login"
+        element={
+          <PublicRoute>
+            <Login />
+          </PublicRoute>
+        }
+      />
+      <Route
+        path="/signup"
+        element={
+          <PublicRoute>
+            <Signup />
+          </PublicRoute>
+        }
+      />
+      <Route
+        path="/chat"
+        element={
+          <PrivateRoute>
+            <ChatPage />
+          </PrivateRoute>
+        }
+      />
+      <Route path="*" element={<Navigate to="/chat" />} />
+    </Routes>
+  );
+}
+
+export default function App() {
+  return (
+    <BrowserRouter>
+      <AuthProvider>
+        <SocketProviderWrapper>
+          <AppRoutes />
+        </SocketProviderWrapper>
+      </AuthProvider>
+    </BrowserRouter>
+  );
+}
