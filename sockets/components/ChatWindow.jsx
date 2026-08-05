@@ -3,6 +3,7 @@ import { getMessages } from "../api";
 import { useSocket } from "../context/Socketcontext";
 import { useAuth } from "../context/Authcontext";
 import MessageBubble from "./MessageBubble";
+import { formatLastSeen } from "../utils/formatLastSeen";
 
 const TYPING_STOP_DELAY = 1500;
 const SCROLLBAR_HIDE_DELAY = 1000; // how long the scrollbar stays visible after you stop scrolling
@@ -253,13 +254,11 @@ export default function ChatWindow({ contact }) {
         <div className="chat-header-info">
           <span className="chat-header-name">{contact.username}</span>
           <span className="chat-header-status">
-            {isOtherTyping
-              ? "typing..."
-              : contactStatus.isOnline
-              ? "Online"
-              : contactStatus.lastSeen
-              ? `Last seen ${new Date(contactStatus.lastSeen).toLocaleString()}`
-              : "Offline"}
+           {isOtherTyping
+  ? "typing..."
+  : contactStatus.isOnline
+  ? "Online"
+  : formatLastSeen(contactStatus.lastSeen)}
           </span>
         </div>
       </div>

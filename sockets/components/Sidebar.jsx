@@ -34,17 +34,20 @@ export default function Sidebar({ activeContact, onSelectContact }) {
   const socket = useSocket();
   const { user, logout } = useAuth();
 
-  useEffect(() => {
-    const fetchContacts = async () => {
-      try {
-        const res = await getContacts();
-        setContacts(res.data.contacts);
-      } catch (err) {
-        console.error(err);
-      }
-    };
-    fetchContacts();
-  }, []);
+useEffect(() => {
+  if (!user) return;
+
+  const fetchContacts = async () => {
+    try {
+      const res = await getContacts();
+      setContacts(res.data.contacts);
+    } catch (err) {
+      console.error("Failed to fetch contacts:", err);
+    }
+  };
+
+  fetchContacts();
+}, [user]);
 
   // Keep online/offline status live via socket events
   useEffect(() => {

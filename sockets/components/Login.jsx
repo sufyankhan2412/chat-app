@@ -18,8 +18,12 @@ export default function Login() {
       await login(email, password);
       navigate("/chat");
     } catch (err) {
-      setError(err.response?.data?.message || "Login failed");
-    } finally {
+  setError(
+    err.response?.data?.message ||
+    err.message ||
+    "Login failed"
+  );
+}finally {
       setLoading(false);
     }
   };
