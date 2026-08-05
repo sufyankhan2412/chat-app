@@ -1,20 +1,21 @@
 require("dotenv").config();
 const express = require("express");
 const http = require("http");
+const path = require("path");
 const cors = require("cors");
 const { Server } = require("socket.io");
 
-const connectDB = require("./config/Db");
-const { initSocket } = require("./socket/Socketmanager");
+const connectDB = require("./config/db");
+const { initSocket } = require("./socket/socketManager");
 
-const authRoutes = require("./routes/Authroutes");
-const userRoutes = require("./routes/Userroutes");
-const messageRoutes = require("./routes/Messageroutes");
+const authRoutes = require("./routes/authRoutes");
+const userRoutes = require("./routes/userRoutes");
+const messageRoutes = require("./routes/messageRoutes");
 
 const app = express();
 const server = http.createServer(app);
 
-const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:5173";
+const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:";
 
 const io = new Server(server, {
   cors: {
@@ -26,6 +27,9 @@ const io = new Server(server, {
 // Middleware
 app.use(cors({ origin: CLIENT_URL }));
 app.use(express.json());
+
+// Serve locally-stored avatar uploads (backend/uploads/avatars/*)
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // Routes
 app.use("/api/auth", authRoutes);

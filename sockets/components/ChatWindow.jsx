@@ -4,6 +4,10 @@ import { useSocket } from "../context/Socketcontext";
 import { useAuth } from "../context/Authcontext";
 import MessageBubble from "./MessageBubble";
 import { formatLastSeen } from "../utils/formatLastSeen";
+import {
+  getMessageDateLabel,
+  isSameDay,
+} from "../utils/messageDate";
 
 const TYPING_STOP_DELAY = 1500;
 const SCROLLBAR_HIDE_DELAY = 1000; // how long the scrollbar stays visible after you stop scrolling
@@ -275,13 +279,28 @@ export default function ChatWindow({ contact }) {
             <div className="spinner" />
           </div>
         )}
-        {messages.map((m) => (
-          <MessageBubble
-            key={m._id}
-            message={m}
-            isOwn={String(m.sender) === String(user._id)}
-          />
-        ))}
+       {messages.map((m, index) => {
+         const previousMessage = messages[index - 1];
+
+           const showDateSeparator =
+              index === 0 ||
+        !isSameDay(m.createdAt, previousMessage?.createdAt);
+
+      return (
+        <React.Fragment key={m._id}>
+          {showDateSeparator && (
+            <div className="message-date-separator">
+          <span>{getMessageDateLabel(m.createdAt)}</span>
+        </div>
+      )}
+
+      <MessageBubble
+        message={m}
+        isOwn={String(m.sender) === String(user._id)}
+      />
+    </React.Fragment>
+  );
+})}
         {isOtherTyping && (
           <div className="typing-indicator">
             <span></span>
