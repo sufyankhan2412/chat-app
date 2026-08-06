@@ -2,6 +2,8 @@ import React, { useEffect, useState } from "react";
 import { getContacts } from "../api";
 import { useSocket } from "../context/Socketcontext";
 import { useAuth } from "../context/Authcontext";
+import { useProfileModal } from "../context/Profilemodalcontext";
+import { resolveAvatarUrl } from "../utils/avatar";
 import SearchUsers from "../SearchUsers";
 
 // Formats the last-message timestamp the way WhatsApp does in the chat list:
@@ -33,6 +35,7 @@ export default function Sidebar({ activeContact, onSelectContact }) {
   const [contacts, setContacts] = useState([]);
   const socket = useSocket();
   const { user, logout } = useAuth();
+  const { openOwnProfile } = useProfileModal();
 
 useEffect(() => {
   if (!user) return;
@@ -158,12 +161,25 @@ useEffect(() => {
   return (
     <div className="sidebar">
       <div className="sidebar-header">
-        <div className="me">
-          <img src={user?.avatar} alt="me" className="avatar-sm" />
+        <div className="me" onClick={() => openOwnProfile(user)} title="View profile">
+          <img src={resolveAvatarUrl(user?.avatar)} alt="me" className="avatar-sm" />
           <span>{user?.username}</span>
         </div>
         <button className="logout-btn" onClick={logout} title="Logout">
-          ⏻
+          <svg
+            viewBox="0 0 24 24"
+            width="19"
+            height="19"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+            <polyline points="16 17 21 12 16 7" />
+            <line x1="21" y1="12" x2="9" y2="12" />
+          </svg>
         </button>
       </div>
 
@@ -188,8 +204,10 @@ useEffect(() => {
               }`}
               onClick={() => onSelectContact(c)}
             >
-              <div className="avatar-wrapper">
-                <img src={c.avatar} alt={c.username} className="avatar-md" />
+              <div
+                className="avatar-wrapper"
+              >
+                <img src={resolveAvatarUrl(c.avatar)} alt={c.username} className="avatar-md" />
                 <span
                   className={`status-dot ${c.isOnline ? "online" : "offline"}`}
                 />

@@ -45,4 +45,10 @@ export const getContacts = () =>
 export const getMessages = (userId) =>
   api.get(`/messages/${userId}`);
 
+// formData may include: username, about, avatar (file) — any subset
+export const updateProfile = (formData) =>
+  api.put("/users/profile", formData);
+
+export const getUserProfile = (id) => api.get(`/users/${id}`);
+
 export default api;

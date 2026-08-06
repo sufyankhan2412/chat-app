@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { searchUsers, addContact } from "./api";
+import { resolveAvatarUrl } from "./utils/avatar";
 
 export default function SearchUsers({ onContactAdded }) {
   const [query, setQuery] = useState("");
@@ -69,7 +70,7 @@ export default function SearchUsers({ onContactAdded }) {
         <div className="search-dropdown">
           {results.map((u) => (
             <div className="search-result-item" key={u._id}>
-              <img src={u.avatar} alt={u.username} className="avatar-sm" />
+              <img src={resolveAvatarUrl(u.avatar)} alt={u.username} className="avatar-sm" />
               <span className="search-username">{u.username}</span>
               <button
                 className="add-btn"

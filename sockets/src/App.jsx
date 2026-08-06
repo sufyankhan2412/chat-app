@@ -7,10 +7,12 @@ import {
 } from "react-router-dom";
 import { AuthProvider, useAuth } from "../context/Authcontext";
 import { SocketProvider } from "../context/Socketcontext";
+import { ProfileModalProvider } from "../context/Profilemodalcontext";
 import Login from "../components/Login";
 import Signup from "../components/Signup";
 import Sidebar from "../components/Sidebar";
 import ChatWindow from "../components/ChatWindow";
+import ProfileModal from "../components/ProfileModal";
 
 function SocketProviderWrapper({ children }) {
   const { token, user } = useAuth();
@@ -24,10 +26,13 @@ function SocketProviderWrapper({ children }) {
 function ChatPage() {
   const [activeContact, setActiveContact] = useState(null);
   return (
-    <div className="chat-page">
-      <Sidebar activeContact={activeContact} onSelectContact={setActiveContact} />
-      <ChatWindow contact={activeContact} />
-    </div>
+    <ProfileModalProvider>
+      <div className={`chat-page ${activeContact ? "chat-open" : ""}`}>
+        <Sidebar activeContact={activeContact} onSelectContact={setActiveContact} />
+        <ChatWindow contact={activeContact} onBack={() => setActiveContact(null)} />
+      </div>
+      <ProfileModal />
+    </ProfileModalProvider>
   );
 }
 

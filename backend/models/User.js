@@ -29,6 +29,11 @@ const userSchema = new mongoose.Schema(
         return `https://api.dicebear.com/7.x/initials/svg?seed=${this.username}`;
       },
     },
+    about: {
+      type: String,
+      default: "Hey there! I am using ChatApp",
+      maxlength: 140,
+    },
     isOnline: {
       type: Boolean,
       default: false,
@@ -59,6 +64,7 @@ userSchema.methods.toSafeObject = function () {
     username: this.username,
     email: this.email,
     avatar: this.avatar,
+    about: this.about,
     isOnline: this.isOnline,
     lastSeen: this.lastSeen,
   };

@@ -216,8 +216,17 @@ body {
   background: transparent;
   border: none;
   color: #fff;
-  font-size: 18px;
   cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border-radius: 50%;
+  transition: background 0.15s ease;
+}
+
+.logout-btn:hover {
+  background: rgba(255, 255, 255, 0.15);
 }
 /* ----------Message Date Separator ---------- */
 .message-date-separator {
@@ -677,4 +686,363 @@ body {
 .message-input-bar button:disabled {
   background: #9bc6c0;
   cursor: not-allowed;
+}
+/* ---------- Profile modal ---------- */
+.sidebar-header .me {
+  cursor: pointer;
+  border-radius: 8px;
+  padding: 4px 6px;
+  margin: -4px -6px;
+  transition: background 0.15s ease;
+}
+
+.sidebar-header .me:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.chat-header {
+  cursor: pointer;
+}
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(11, 20, 26, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  animation: fadeIn 0.15s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.profile-modal {
+  width: min(100%, 400px);
+  max-height: 90vh;
+  background: #fff;
+  border-radius: 14px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.3);
+}
+
+.profile-modal-header {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  background: #075e54;
+  color: #fff;
+  padding: 18px 20px;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.modal-back-btn {
+  background: transparent;
+  border: none;
+  color: #fff;
+  font-size: 20px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.profile-modal-body {
+  padding: 28px 24px 24px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.profile-avatar-wrapper {
+  position: relative;
+  width: 150px;
+  height: 150px;
+  border-radius: 50%;
+  overflow: hidden;
+  margin-bottom: 24px;
+  flex-shrink: 0;
+}
+
+.profile-avatar-wrapper.editable {
+  cursor: pointer;
+}
+
+.profile-avatar-lg {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.profile-avatar-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 8px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.profile-avatar-wrapper.editable:hover .profile-avatar-overlay {
+  opacity: 1;
+}
+
+.profile-error {
+  width: 100%;
+  background: #fff2f2;
+  color: #b3261e;
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: 13px;
+  margin-bottom: 12px;
+  border: 1px solid #ffd8d8;
+}
+
+.profile-field {
+  width: 100%;
+  margin-bottom: 18px;
+}
+
+.profile-field label {
+  display: block;
+  font-size: 12px;
+  color: #128c7e;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 6px;
+}
+
+.profile-field p {
+  font-size: 15px;
+  color: #111b21;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.profile-field-static {
+  color: #667781 !important;
+}
+
+.profile-field input,
+.profile-field textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid #d7e1e8;
+  font-size: 14px;
+  outline: none;
+  background: #f8fbfd;
+  font-family: inherit;
+  resize: none;
+}
+
+.profile-field input:focus,
+.profile-field textarea:focus {
+  border-color: #128c7e;
+  box-shadow: 0 0 0 3px rgba(18, 140, 126, 0.16);
+}
+
+.profile-actions {
+  width: 100%;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.profile-btn-primary,
+.profile-btn-secondary {
+  padding: 9px 18px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  border: none;
+}
+
+.profile-btn-primary {
+  background: linear-gradient(135deg, #128c7e, #19a788);
+  color: #fff;
+}
+
+.profile-btn-primary:disabled {
+  background: #9bc6c0;
+  cursor: not-allowed;
+}
+
+.profile-btn-secondary {
+  background: #f0f2f1;
+  color: #333;
+}
+
+/* ---------- Back button ----------
+   Hidden by default so tablets/laptops/desktop keep the side-by-side
+   sidebar + chat layout untouched. Only shown at the mobile breakpoint
+   below, where the two panes collapse into a single WhatsApp-style pane. */
+.chat-back-btn {
+  display: none;
+  background: transparent;
+  border: none;
+  color: #fff;
+  cursor: pointer;
+  padding: 0;
+  margin-right: 4px;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+/* =========================================================
+   Responsiveness
+   Breakpoints: 1024px (small laptop/tablet landscape),
+                768px (tablet portrait / large phone - switch
+                sidebar+chat to a single WhatsApp-style pane),
+                480px (small phones)
+   ========================================================= */
+
+/* ---------- Tablet / small laptop ---------- */
+@media (max-width: 1024px) {
+  .sidebar {
+    width: 280px;
+  }
+
+  .messages-container {
+    padding: 14px 18px;
+  }
+
+  .message-bubble {
+    max-width: 72%;
+  }
+
+  .profile-modal {
+    width: min(100%, 360px);
+  }
+}
+
+/* ---------- Tablet portrait / large phone: single-pane layout ---------- */
+@media (max-width: 768px) {
+  .chat-page {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .sidebar,
+  .chat-window {
+    width: 100%;
+    flex: none;
+  }
+
+  /* Only one pane visible at a time, like WhatsApp on mobile:
+     show the contact list until a chat is opened, then swap to it. */
+  .chat-page:not(.chat-open) .chat-window {
+    display: none;
+  }
+
+  .chat-page.chat-open .sidebar {
+    display: none;
+  }
+
+  .sidebar-header {
+    padding: 12px 14px;
+  }
+
+  .chat-back-btn {
+    display: flex;
+  }
+
+  .chat-header {
+    padding: 10px 14px;
+  }
+
+  .message-input-bar {
+    padding: 10px 12px;
+  }
+
+  .modal-overlay {
+    align-items: flex-end;
+  }
+
+  .profile-modal {
+    width: 100%;
+    max-height: 92vh;
+    border-radius: 16px 16px 0 0;
+    animation: slideUp 0.2s ease;
+  }
+
+  @keyframes slideUp {
+    from { transform: translateY(100%); }
+    to { transform: translateY(0); }
+  }
+}
+
+/* ---------- Small phones ---------- */
+@media (max-width: 480px) {
+  .auth-card {
+    padding: 28px 22px;
+    border-radius: 18px;
+  }
+
+  .auth-visual-card h1 {
+    font-size: 26px;
+  }
+
+  .avatar-md {
+    width: 38px;
+    height: 38px;
+  }
+
+  .avatar-sm {
+    width: 26px;
+    height: 26px;
+  }
+
+  .contact-item {
+    padding: 10px 12px;
+    gap: 10px;
+  }
+
+  .contact-name {
+    font-size: 14px;
+  }
+
+  .message-bubble {
+    max-width: 85%;
+    font-size: 13.5px;
+  }
+
+  .message-input-bar input {
+    padding: 9px 14px;
+  }
+
+  .message-input-bar button {
+    padding: 0 14px;
+  }
+
+  .profile-avatar-wrapper {
+    width: 120px;
+    height: 120px;
+  }
+
+  .profile-modal-header {
+    padding: 14px 16px;
+    font-size: 16px;
+  }
+
+  .profile-modal-body {
+    padding: 20px 18px 18px;
+  }
 }

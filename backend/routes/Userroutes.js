@@ -1,8 +1,11 @@
 const express = require("express");
+const fs = require("fs");
+const path = require("path");
 const User = require("../models/User");
 const Contact = require("../models/Contact");
 const Message = require("../models/Message");
-const { protect } = require("../middleware/authMiddleware");
+const { protect } = require("../middleware/Authmiddleware");
+const { uploadAvatar, avatarsDir } = require("../middleware/upload");
 
 const router = express.Router();
 
@@ -122,6 +125,77 @@ router.get("/contacts", protect, async (req, res) => {
       });
 
     res.json({ contacts });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// @route  PUT /api/users/profile
+// Update my own profile: username, "about" text, and/or a locally-uploaded avatar
+router.put(
+  "/profile",
+  protect,
+  (req, res, next) => {
+    uploadAvatar.single("avatar")(req, res, (err) => {
+      if (err) return res.status(400).json({ message: err.message });
+      next();
+    });
+  },
+  async (req, res) => {
+    try {
+      const user = await User.findById(req.user._id);
+      if (!user) return res.status(404).json({ message: "User not found" });
+
+      const { username, about } = req.body;
+
+      if (typeof username === "string" && username.trim()) {
+        const trimmed = username.trim();
+        if (trimmed !== user.username) {
+          const taken = await User.findOne({
+            username: trimmed,
+            _id: { $ne: user._id },
+          });
+          if (taken) {
+            return res.status(400).json({ message: "Username already taken" });
+          }
+          user.username = trimmed;
+        }
+      }
+
+      if (typeof about === "string") {
+        user.about = about.slice(0, 140);
+      }
+
+      if (req.file) {
+        // Clean up the old avatar file, but only if it was a local upload
+        // (skip the auto-generated dicebear URL new users start with)
+        if (user.avatar && user.avatar.startsWith("/uploads/avatars/")) {
+          const oldPath = path.join(avatarsDir, path.basename(user.avatar));
+          fs.unlink(oldPath, () => {});
+        }
+        user.avatar = `/uploads/avatars/${req.file.filename}`;
+      }
+
+      await user.save();
+      res.json({ user: user.toSafeObject() });
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  }
+);
+
+// @route  GET /api/users/:id
+// View another user's public profile (e.g. tapping their name/avatar in a chat)
+// NOTE: keep this registered last so it doesn't swallow the routes above
+router.get("/:id", protect, async (req, res) => {
+  try {
+    const targetUser = await User.findById(req.params.id).select(
+      "username avatar about isOnline lastSeen"
+    );
+    if (!targetUser) {
+      return res.status(404).json({ message: "User not found" });
+    }
+    res.json({ user: targetUser });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

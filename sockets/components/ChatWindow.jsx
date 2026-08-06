@@ -2,6 +2,8 @@
 import { getMessages } from "../api";
 import { useSocket } from "../context/Socketcontext";
 import { useAuth } from "../context/Authcontext";
+import { useProfileModal } from "../context/Profilemodalcontext";
+import { resolveAvatarUrl } from "../utils/avatar";
 import MessageBubble from "./MessageBubble";
 import { formatLastSeen } from "../utils/formatLastSeen";
 import {
@@ -12,7 +14,7 @@ import {
 const TYPING_STOP_DELAY = 1500;
 const SCROLLBAR_HIDE_DELAY = 1000; // how long the scrollbar stays visible after you stop scrolling
 
-export default function ChatWindow({ contact }) {
+export default function ChatWindow({ contact, onBack }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [isOtherTyping, setIsOtherTyping] = useState(false);
@@ -25,6 +27,7 @@ export default function ChatWindow({ contact }) {
 
   const socket = useSocket();
   const { user } = useAuth();
+  const { openUserProfile } = useProfileModal();
   const messagesContainerRef = useRef(null);
   const typingTimeoutRef = useRef(null);
   const isTypingRef = useRef(false);
@@ -253,8 +256,34 @@ export default function ChatWindow({ contact }) {
 
   return (
     <div className="chat-window">
-      <div className="chat-header">
-        <img src={contact.avatar} alt={contact.username} className="avatar-md" />
+      <div
+        className="chat-header"
+        onClick={() => openUserProfile(contact)}
+        title="View contact info"
+      >
+        <button
+          className="chat-back-btn"
+          onClick={(e) => {
+            e.stopPropagation();
+            onBack?.();
+          }}
+          title="Back to chats"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            width="22"
+            height="22"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <line x1="19" y1="12" x2="5" y2="12" />
+            <polyline points="12 19 5 12 12 5" />
+          </svg>
+        </button>
+        <img src={resolveAvatarUrl(contact.avatar)} alt={contact.username} className="avatar-md" />
         <div className="chat-header-info">
           <span className="chat-header-name">{contact.username}</span>
           <span className="chat-header-status">
