@@ -1,0 +1,6 @@
+node_modules
+.env
+*.log
+
+# Locally-uploaded avatar images shouldn't be committed
+uploads/
