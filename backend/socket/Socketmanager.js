@@ -101,9 +101,17 @@ function initSocket(io) {
     }
 
     // ---- Send a message ----
-    socket.on("sendMessage", async ({ receiverId, content }) => {
+    // `type` + `attachment` are new: for text messages (the default) only
+    // `content` is used, exactly as before. For image/video/voice/file
+    // messages, the client has already uploaded the file via
+    // POST /api/messages/upload and passes back the returned `attachment`
+    // object here; `content` becomes an optional caption.
+    socket.on("sendMessage", async ({ receiverId, content, type = "text", attachment }) => {
       try {
-        if (!content || !content.trim()) return;
+        const isTextMessage = type === "text";
+
+        if (isTextMessage && (!content || !content.trim())) return;
+        if (!isTextMessage && !attachment?.url) return;
 
         const receiverSocketIds = getReceiverSocketIds(receiverId);
         const status = receiverSocketIds.length ? "delivered" : "sent";
@@ -111,7 +119,9 @@ function initSocket(io) {
         const message = await Message.create({
           sender: userId,
           receiver: receiverId,
-          content: content.trim(),
+          type,
+          content: content ? content.trim() : "",
+          ...(isTextMessage ? {} : { attachment }),
           status,
         });
 

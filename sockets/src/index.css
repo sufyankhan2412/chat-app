@@ -659,34 +659,504 @@ body {
 /* ---------- Input bar ---------- */
 .message-input-bar {
   display: flex;
-  gap: 10px;
-  padding: 12px 16px;
-  background: #f0f0f0;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 14px;
+  background: #f0f2f5;
+  border-top: 1px solid #e9edef;
 }
 
 .message-input-bar input {
   flex: 1;
-  padding: 11px 16px;
-  border-radius: 22px;
-  border: none;
+  padding: 11px 18px;
+  border-radius: 24px;
+  border: 1.5px solid transparent;
   outline: none;
-  font-size: 14px;
+  font-size: 14.5px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+  transition: border-color 0.15s ease;
 }
 
-.message-input-bar button {
-  background: #128c7e;
-  color: #fff;
-  border: none;
-  padding: 0 20px;
-  border-radius: 22px;
-  cursor: pointer;
-  font-size: 14px;
+.message-input-bar input:focus {
+  border-color: #128c7e;
+}
+
+.message-input-bar input:disabled {
+  background: #f5f5f5;
+  color: #999;
 }
 
 .message-input-bar button:disabled {
   background: #9bc6c0;
   cursor: not-allowed;
 }
+
+/* ---------- Attachments: icon buttons shared by attach/mic/send ---------- */
+.icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: #54656f;
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 0;
+  transition: background 0.15s ease, transform 0.1s ease;
+}
+
+.icon-btn:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.icon-btn:active:not(:disabled) {
+  transform: scale(0.92);
+}
+
+.icon-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Attach + mic stay plain icons, WhatsApp-style — only Send gets a filled
+   circle, so it visually stands out as the one "commit" action. */
+.send-btn {
+  background: #128c7e;
+  color: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.send-btn:hover:not(:disabled) {
+  background: #0f7568;
+}
+
+.send-btn:disabled {
+  background: #a8d2cb;
+  opacity: 1;
+}
+
+.spinner-sm {
+  width: 16px;
+  height: 16px;
+  border-width: 2px;
+  border-top-color: #fff;
+  border-color: rgba(255, 255, 255, 0.35);
+  border-top-style: solid;
+}
+
+/* ---------- Attach menu ---------- */
+.attach-menu-wrapper {
+  position: relative;
+}
+
+.attach-menu {
+  position: absolute;
+  bottom: 52px;
+  left: 0;
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.2);
+  overflow: hidden;
+  min-width: 220px;
+  z-index: 20;
+  animation: attach-menu-pop 0.14s ease-out;
+}
+
+@keyframes attach-menu-pop {
+  from { opacity: 0; transform: translateY(6px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.attach-menu button {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 16px;
+  border: none;
+  background: none;
+  text-align: left;
+  font-size: 14px;
+  color: #111b21;
+  cursor: pointer;
+}
+
+.attach-menu button:hover {
+  background: #f5f6f6;
+}
+
+.attach-menu-icon {
+  font-size: 17px;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.attach-menu-icon.photo {
+  background: #ecf5ff;
+}
+
+.attach-menu-icon.doc {
+  background: #fff1e6;
+}
+
+/* ---------- Attachment preview-before-send bar ---------- */
+.attachment-preview-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  background: #f0f2f5;
+  border-top: 1px solid #e9edef;
+}
+
+.attachment-preview-cancel {
+  border: none;
+  background: rgba(0, 0, 0, 0.08);
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 12px;
+  color: #444;
+  flex-shrink: 0;
+}
+
+.attachment-preview-thumb {
+  width: 56px;
+  height: 56px;
+  object-fit: cover;
+  border-radius: 8px;
+  background: #ddd;
+}
+
+.attachment-preview-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #fff;
+  padding: 8px 12px;
+  border-radius: 8px;
+}
+
+.attachment-preview-file-icon {
+  font-size: 20px;
+}
+
+.attachment-preview-file-name {
+  font-size: 13px;
+  font-weight: 500;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-preview-file-size {
+  font-size: 12px;
+  color: #667781;
+}
+
+/* ---------- Voice recording bar ---------- */
+.recording-bar {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  background: #fff;
+  border-radius: 24px;
+  height: 44px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+.recording-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #e63946;
+  animation: recording-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes recording-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.8); }
+}
+
+.recording-timer {
+  font-variant-numeric: tabular-nums;
+  font-size: 14px;
+  color: #111b21;
+  font-weight: 500;
+}
+
+.recording-hint {
+  font-size: 13px;
+  color: #667781;
+}
+
+.recording-cancel {
+  font-size: 16px;
+}
+
+/* ---------- Media inside message bubbles ---------- */
+.message-image {
+  max-width: 260px;
+  max-height: 320px;
+  border-radius: 6px;
+  display: block;
+  object-fit: cover;
+  cursor: pointer;
+}
+
+.message-image-link {
+  display: block;
+}
+
+.message-video {
+  max-width: 280px;
+  max-height: 320px;
+  border-radius: 6px;
+  display: block;
+  background: #000;
+}
+
+.message-video-wrapper {
+  position: relative;
+  cursor: pointer;
+  border-radius: 6px;
+  overflow: hidden;
+  line-height: 0;
+}
+
+.message-video-wrapper .message-video {
+  pointer-events: none; /* clicks go to the wrapper, not the native video element */
+}
+
+.message-video-play {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease, transform 0.1s ease;
+}
+
+.message-video-wrapper:hover .message-video-play {
+  background: rgba(0, 0, 0, 0.7);
+}
+
+.message-video-wrapper:active .message-video-play {
+  transform: translate(-50%, -50%) scale(0.92);
+}
+
+.message-caption {
+  margin-top: 6px;
+  display: block;
+}
+
+.bubble-image,
+.bubble-video {
+  padding: 4px;
+}
+
+.bubble-image .message-caption,
+.bubble-video .message-caption {
+  padding: 4px 8px 2px;
+}
+
+.message-file {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  text-decoration: none;
+  color: inherit;
+  min-width: 220px;
+  padding: 4px 6px 4px 2px;
+  border-radius: 8px;
+  transition: background 0.15s ease;
+}
+
+.message-file:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.message-file-icon {
+  flex-shrink: 0;
+  display: flex;
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.15));
+}
+
+.message-file-icon-svg {
+  display: block;
+}
+
+.message-file-info {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.message-file-name {
+  font-size: 14px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-file-size {
+  font-size: 12px;
+  color: #667781;
+  letter-spacing: 0.2px;
+}
+
+.message-file-download {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.06);
+  color: #54656f;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ---------- Voice note player ---------- */
+.voice-player {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 200px;
+  padding: 2px 0;
+}
+
+.voice-play-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: none;
+  background: #128c7e;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s ease, transform 0.1s ease;
+}
+
+.voice-play-btn:hover {
+  background: #0f7568;
+}
+
+.voice-play-btn:active {
+  transform: scale(0.94);
+}
+
+.voice-track {
+  flex: 1;
+  height: 4px;
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 2px;
+  cursor: pointer;
+  position: relative;
+}
+
+.voice-track-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: #128c7e;
+  border-radius: 2px;
+}
+
+.voice-duration {
+  font-size: 12px;
+  color: #667781;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+/* ---------- Fullscreen media viewer (images/videos open in-place, not a new tab) ---------- */
+.media-viewer-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.9);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  animation: media-viewer-fade-in 0.15s ease-out;
+}
+
+@keyframes media-viewer-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.media-viewer-back {
+  position: absolute;
+  top: 18px;
+  left: 18px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 16px 9px 12px;
+  border-radius: 24px;
+  border: none;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+  z-index: 1;
+}
+
+.media-viewer-back:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.media-viewer-content {
+  max-width: 90vw;
+  max-height: 88vh;
+  display: flex;
+}
+
+.media-viewer-image {
+  max-width: 90vw;
+  max-height: 88vh;
+  object-fit: contain;
+  border-radius: 4px;
+}
+
+.media-viewer-video {
+  max-width: 90vw;
+  max-height: 88vh;
+  border-radius: 4px;
+  background: #000;
+}
+
 /* ---------- Profile modal ---------- */
 .sidebar-header .me {
   cursor: pointer;

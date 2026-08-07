@@ -23,6 +23,26 @@ function formatPreviewTime(dateStr) {
   return d.toLocaleDateString([], { day: "2-digit", month: "2-digit", year: "2-digit" });
 }
 
+// Attachment messages often have no caption, so the sidebar preview needs a
+// WhatsApp-style fallback label ("📷 Photo") instead of showing a blank line.
+function previewText(lastMessage) {
+  if (!lastMessage) return null;
+  if (lastMessage.content) return lastMessage.content;
+
+  switch (lastMessage.type) {
+    case "image":
+      return "📷 Photo";
+    case "video":
+      return "🎥 Video";
+    case "voice":
+      return "🎤 Voice message";
+    case "file":
+      return "📎 Document";
+    default:
+      return "";
+  }
+}
+
 // Small tick icon for the sidebar preview line (only shown for messages I sent)
 function PreviewTicks({ status }) {
   if (status === "sent") return <span className="preview-tick tick-grey">✓</span>;
@@ -227,7 +247,7 @@ useEffect(() => {
                   <span className={`contact-last-message ${isUnread ? "unread" : ""}`}>
                     {isOwnLastMsg && <PreviewTicks status={lastMsg.status} />}
                     <span className="contact-last-message-text">
-                      {lastMsg ? lastMsg.content : "Say hi 👋"}
+                      {lastMsg ? previewText(lastMsg) : "Say hi 👋"}
                     </span>
                   </span>
                 </div>

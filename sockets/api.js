@@ -45,6 +45,15 @@ export const getContacts = () =>
 export const getMessages = (userId) =>
   api.get(`/messages/${userId}`);
 
+// Uploads one chat attachment (image/video/voice/file) and returns
+// { attachment: { url, fileName, fileSize, mimeType, duration? } }.
+// `type` must be appended to the FormData BEFORE `file` — see the
+// comment on the matching backend route for why the order matters.
+export const uploadAttachment = (formData) =>
+  api.post("/messages/upload", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+
 // formData may include: username, about, avatar (file) — any subset
 export const updateProfile = (formData) =>
   api.put("/users/profile", formData);

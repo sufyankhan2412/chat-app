@@ -12,12 +12,33 @@ const messageSchema = new mongoose.Schema(
       ref: "User",
       required: true,
     },
-    content: {
+
+    // "text" is a normal chat message. The rest are attachment messages —
+    // content becomes an optional caption instead of the required body.
+    type: {
       type: String,
-      required: true,
-      trim: true,
+      enum: ["text", "image", "video", "file", "voice"],
+      default: "text",
     },
 
+    content: {
+      type: String,
+      trim: true,
+      default: "",
+      required: function () {
+        return this.type === "text";
+      },
+    },
+
+    // Only present when type !== "text". Populated from the file that was
+    // uploaded via POST /api/messages/upload before this message was sent.
+    attachment: {
+      url: { type: String },
+      fileName: { type: String },
+      fileSize: { type: Number }, // bytes
+      mimeType: { type: String },
+      duration: { type: Number }, // seconds — voice notes and videos only
+    },
 
     status: {
       type: String,
