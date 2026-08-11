@@ -44,6 +44,15 @@ export const ProfileModalProvider = ({ children }) => {
     setIsOwnProfile(false);
   }, []);
 
+  // Patch just the online/offline status of whichever profile is currently
+  // open, without refetching. No-ops if that profile isn't the one open.
+  const updateProfileStatus = useCallback((userId, status) => {
+    setProfileUser((prev) => {
+      if (!prev || String(prev._id) !== String(userId)) return prev;
+      return { ...prev, ...status };
+    });
+  }, []);
+
   return (
     <ProfileModalContext.Provider
       value={{
@@ -53,6 +62,7 @@ export const ProfileModalProvider = ({ children }) => {
         openOwnProfile,
         openUserProfile,
         closeProfile,
+        updateProfileStatus,
       }}
     >
       {children}

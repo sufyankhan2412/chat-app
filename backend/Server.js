@@ -6,7 +6,7 @@ const cors = require("cors");
 const { Server } = require("socket.io");
 
 const connectDB = require("./config/db");
-const { initSocket } = require("./socket/socketManager");
+const { initSocket } = require("./socket/Socketmanager");
 
 const authRoutes = require("./routes/authRoutes");
 const userRoutes = require("./routes/userRoutes");

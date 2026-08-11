@@ -45,14 +45,30 @@ router.get("/:userId", protect, async (req, res) => {
     const otherUserId = req.params.userId;
     const myId = req.user._id;
 
-    const messages = await Message.find({
+    const limit = Math.min(parseInt(req.query.limit, 10) || 30, 100);
+    const before = req.query.before; // ISO date string cursor: only messages older than this
+
+    const query = {
       $or: [
         { sender: myId, receiver: otherUserId },
         { sender: otherUserId, receiver: myId },
       ],
-    }).sort({ createdAt: 1 });
+    };
 
-    res.json({ messages });
+    if (before) {
+      const beforeDate = new Date(before);
+      if (!Number.isNaN(beforeDate.getTime())) {
+        query.createdAt = { $lt: beforeDate };
+      }
+    }
+
+    // Fetch newest-first so `.limit()` grabs the most recent page, then
+    // flip back to ascending order for the client to render top-to-bottom.
+    const page = await Message.find(query).sort({ createdAt: -1 }).limit(limit);
+    const messages = page.reverse();
+    const hasMore = page.length === limit;
+
+    res.json({ messages, hasMore });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

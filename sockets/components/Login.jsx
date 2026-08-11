@@ -26,7 +26,7 @@ export default function Login() {
 }finally {
       setLoading(false);
     }
-  };
+  };dc
 
   return (
     <div className="auth-page">

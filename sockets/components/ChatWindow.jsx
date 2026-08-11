@@ -15,6 +15,8 @@ import {
 
 const TYPING_STOP_DELAY = 1500;
 const SCROLLBAR_HIDE_DELAY = 1000; // how long the scrollbar stays visible after you stop scrolling
+const PAGE_SIZE = 30; // how many messages to fetch per page (initial load + each "load older" step)
+const LOAD_OLDER_THRESHOLD = 80; // px from the top that triggers fetching older messages
 
 // Picking "Photo/Video" vs "Document" in the attachment menu just changes
 // which `accept` the hidden file input uses, and whether the resulting
@@ -36,6 +38,8 @@ export default function ChatWindow({ contact, onBack }) {
     lastSeen: contact?.lastSeen,
   });
   const [loadingMessages, setLoadingMessages] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [hasMoreOlder, setHasMoreOlder] = useState(false);
   const [showScrollbar, setShowScrollbar] = useState(false);
 
   // ---- Attachment picker + preview-before-send state ----
@@ -58,6 +62,9 @@ export default function ChatWindow({ contact, onBack }) {
   const typingTimeoutRef = useRef(null);
   const isTypingRef = useRef(false);
   const messageCacheRef = useRef(new Map());
+  const isPrependingOlderRef = useRef(false);
+  const pendingScrollRestoreRef = useRef(null); // { prevScrollHeight, prevScrollTop } while an older-page prepend is in flight
+  const isPinnedToBottomRef = useRef(true); // whether the view is currently sitting at the bottom of the chat
   const scrollbarHideTimeoutRef = useRef(null);
   const mediaInputRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -77,21 +84,28 @@ export default function ChatWindow({ contact, onBack }) {
     setIsOtherTyping(false);
     setContactStatus({ isOnline: contact.isOnline, lastSeen: contact.lastSeen });
 
-    const cachedMessages = messageCacheRef.current.get(contactId) || [];
-    setMessages(cachedMessages);
-    setLoadingMessages(cachedMessages.length === 0);
+    const cached = messageCacheRef.current.get(contactId);
+    setMessages(cached?.messages || []);
+    setHasMoreOlder(cached?.hasMore ?? false);
+    setLoadingMessages(!cached);
 
     // Never show the scrollbar just because we switched chats
     setShowScrollbar(false);
     if (scrollbarHideTimeoutRef.current) clearTimeout(scrollbarHideTimeoutRef.current);
 
+    if (cached) return; // already have the latest page for this contact
+
     let isCurrent = true;
     const fetchHistory = async () => {
       try {
-        const res = await getMessages(contact._id);
+        const res = await getMessages(contact._id, { limit: PAGE_SIZE });
         if (!isCurrent) return;
-        messageCacheRef.current.set(contactId, res.data.messages);
+        messageCacheRef.current.set(contactId, {
+          messages: res.data.messages,
+          hasMore: res.data.hasMore,
+        });
         setMessages(res.data.messages);
+        setHasMoreOlder(res.data.hasMore);
       } catch (err) {
         if (isCurrent) console.error(err);
       } finally {
@@ -105,6 +119,54 @@ export default function ChatWindow({ contact, onBack }) {
       isCurrent = false;
     };
   }, [contact]);
+
+  // Fetch an older page when the user scrolls near the top, preserving
+  // their exact visual scroll position (otherwise prepending messages
+  // above the viewport would yank the view down/up as content shifts).
+  const loadOlderMessages = async () => {
+    if (!contact || loadingOlder || !hasMoreOlder || messages.length === 0) return;
+
+    const el = messagesContainerRef.current;
+    const prevScrollHeight = el ? el.scrollHeight : 0;
+    const prevScrollTop = el ? el.scrollTop : 0;
+
+    setLoadingOlder(true);
+    try {
+      const oldestCreatedAt = messages[0].createdAt;
+      const res = await getMessages(contact._id, {
+        limit: PAGE_SIZE,
+        before: oldestCreatedAt,
+      });
+
+      const contactId = String(contact._id);
+      isPrependingOlderRef.current = true;
+      pendingScrollRestoreRef.current = { prevScrollHeight, prevScrollTop };
+      setMessages((prev) => {
+        const next = [...res.data.messages, ...prev];
+        messageCacheRef.current.set(contactId, {
+          messages: next,
+          hasMore: res.data.hasMore,
+        });
+        return next;
+      });
+      setHasMoreOlder(res.data.hasMore);
+    } catch (err) {
+      console.error("Failed to load older messages:", err);
+    } finally {
+      setLoadingOlder(false);
+    }
+  };
+
+  const handleMessagesScroll = () => {
+    handleUserScrollActivity();
+    handleScrollPositionTracking();
+    const el = messagesContainerRef.current;
+    if (!el) return;
+    if (el.scrollTop < LOAD_OLDER_THRESHOLD) {
+      loadOlderMessages();
+    }
+  };
+
 
   useEffect(() => {
     if (!socket || !contact || !user) return;
@@ -146,7 +208,8 @@ export default function ChatWindow({ contact, onBack }) {
       ) {
         setMessages((prev) => {
           const next = [...prev, message];
-          messageCacheRef.current.set(contactId, next);
+          const prevCached = messageCacheRef.current.get(contactId);
+          messageCacheRef.current.set(contactId, { messages: next, hasMore: prevCached?.hasMore ?? false });
           return next;
         });
         socket.emit("markAsRead", { senderId: message.sender });
@@ -160,7 +223,8 @@ export default function ChatWindow({ contact, onBack }) {
       ) {
         setMessages((prev) => {
           const next = [...prev, message];
-          messageCacheRef.current.set(contactId, next);
+          const prevCached = messageCacheRef.current.get(contactId);
+          messageCacheRef.current.set(contactId, { messages: next, hasMore: prevCached?.hasMore ?? false });
           return next;
         });
       }
@@ -171,7 +235,8 @@ export default function ChatWindow({ contact, onBack }) {
         const next = prev.map((m) =>
           messageIds.includes(String(m._id)) ? { ...m, status: "delivered" } : m
         );
-        messageCacheRef.current.set(contactId, next);
+        const prevCached = messageCacheRef.current.get(contactId);
+        messageCacheRef.current.set(contactId, { messages: next, hasMore: prevCached?.hasMore ?? false });
         return next;
       });
     };
@@ -182,7 +247,8 @@ export default function ChatWindow({ contact, onBack }) {
           const next = prev.map((m) =>
             String(m.sender) === String(user._id) ? { ...m, status: "read" } : m
           );
-          messageCacheRef.current.set(contactId, next);
+          const prevCached = messageCacheRef.current.get(contactId);
+          messageCacheRef.current.set(contactId, { messages: next, hasMore: prevCached?.hasMore ?? false });
           return next;
         });
       }
@@ -231,9 +297,43 @@ export default function ChatWindow({ contact, onBack }) {
 
   useLayoutEffect(() => {
     const el = messagesContainerRef.current;
+    if (isPrependingOlderRef.current) {
+      isPrependingOlderRef.current = false;
+      const pending = pendingScrollRestoreRef.current;
+      pendingScrollRestoreRef.current = null;
+      if (el && pending) {
+        el.scrollTop = el.scrollHeight - pending.prevScrollHeight + pending.prevScrollTop;
+      }
+      return;
+    }
     if (!el) return;
     el.scrollTop = el.scrollHeight;
+    // We just forced the view to the bottom, so mark it "pinned" — any
+    // image/video that loads after this point and grows the container
+    // should keep it snapped to the bottom too (see handleMediaLoad).
+    isPinnedToBottomRef.current = true;
   }, [contact, messages, isOtherTyping]);
+
+  // Whether the user is currently sitting at (or very near) the bottom of
+  // the conversation. Updated on every scroll so we know, at any later
+  // point, whether a late-loading image should pull the view back down.
+  const handleScrollPositionTracking = () => {
+    const el = messagesContainerRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    isPinnedToBottomRef.current = distanceFromBottom < 40;
+  };
+
+  // Images/videos finish loading after the initial render, which grows the
+  // container. If the trailing message IS the image, measuring "distance
+  // from bottom" at this point is unreliable — that distance now includes
+  // the very growth we're trying to detect. Instead we trust whether the
+  // user was pinned to the bottom *before* this growth happened.
+  const handleMediaLoad = () => {
+    const el = messagesContainerRef.current;
+    if (!el || !isPinnedToBottomRef.current) return;
+    el.scrollTop = el.scrollHeight;
+  };
 
   useEffect(() => {
     return () => {
@@ -516,6 +616,7 @@ export default function ChatWindow({ contact, onBack }) {
       <div
         className={`messages-container${showScrollbar ? " scrollbar-visible" : ""}`}
         ref={messagesContainerRef}
+        onScroll={handleMessagesScroll}
         onWheel={handleUserScrollActivity}
         onTouchMove={handleUserScrollActivity}
         onMouseDown={handleUserScrollActivity}
@@ -523,6 +624,11 @@ export default function ChatWindow({ contact, onBack }) {
         {loadingMessages && (
           <div className="messages-loading">
             <div className="spinner" />
+          </div>
+        )}
+        {!loadingMessages && loadingOlder && (
+          <div className="messages-loading-older">
+            <div className="spinner spinner-sm" />
           </div>
         )}
        {messages.map((m, index) => {
@@ -544,6 +650,7 @@ export default function ChatWindow({ contact, onBack }) {
         message={m}
         isOwn={String(m.sender) === String(user._id)}
         onOpenMedia={setViewerMedia}
+        onMediaLoad={handleMediaLoad}
       />
     </React.Fragment>
   );

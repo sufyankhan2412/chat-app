@@ -42,8 +42,8 @@ export const addContact = (id) =>
 export const getContacts = () =>
   api.get("/users/contacts");
 
-export const getMessages = (userId) =>
-  api.get(`/messages/${userId}`);
+export const getMessages = (userId, params = {}) =>
+  api.get(`/messages/${userId}`, { params });
 
 // Uploads one chat attachment (image/video/voice/file) and returns
 // { attachment: { url, fileName, fileSize, mimeType, duration? } }.

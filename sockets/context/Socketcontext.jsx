@@ -12,7 +12,7 @@ export const SocketProvider = ({ children, token, user }) => {
   const [socket, setSocket] = useState(null);
 
   useEffect(() => {
-    if (!token || !user) {
+    if (!token) {
       if (socketRef.current) {
         socketRef.current.disconnect();
         socketRef.current = null;
@@ -33,7 +33,7 @@ export const SocketProvider = ({ children, token, user }) => {
       socketRef.current = null;
     };
 
-  }, [token, user]);
+  }, [token]);
 
   return <SocketContext.Provider value={socket}>{children}</SocketContext.Provider>;
 };

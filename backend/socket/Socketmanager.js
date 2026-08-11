@@ -60,11 +60,15 @@ function initSocket(io) {
       }
     });
 
-    try {
-      await User.findByIdAndUpdate(userId, { isOnline: true });
-    } catch (err) {
-      console.error("Error setting user online:", err.message);
-    }
+try {
+  const stillOnline = onlineUsers.has(userKey);
+  await User.findByIdAndUpdate(userId, {
+    isOnline: stillOnline,
+    ...(stillOnline ? {} : { lastSeen: new Date() }),
+  });
+} catch (err) {
+  console.error("Error setting user online:", err.message);
+}
 
     // Let everyone know this user just came online
     socket.broadcast.emit("userOnline", { userId });
@@ -174,21 +178,20 @@ function initSocket(io) {
       const userSockets = onlineUsers.get(userKey);
       if (userSockets) {
         userSockets.delete(socket.id);
-        if (userSockets.size === 0) {
-          onlineUsers.delete(userKey);
-          try {
-            await User.findByIdAndUpdate(userId, {
-              isOnline: false,
-              lastSeen: new Date(),
-            });
-          } catch (err) {
-            console.error("Error setting user offline:", err.message);
-          }
-          socket.broadcast.emit("userOffline", {
-            userId,
-            lastSeen: new Date(),
-          });
-        }
+if (userSockets.size === 0) {
+  onlineUsers.delete(userKey);
+  const lastSeen = new Date();
+  try {
+    const stillOnline = onlineUsers.has(userKey);
+    await User.findByIdAndUpdate(userId, {
+      isOnline: stillOnline,
+      ...(stillOnline ? {} : { lastSeen }),
+    });
+  } catch (err) {
+    console.error("Error setting user offline:", err.message);
+  }
+  socket.broadcast.emit("userOffline", { userId, lastSeen });
+}
       }
     });
   });

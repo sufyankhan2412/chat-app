@@ -66,7 +66,7 @@ function FileTypeIcon({ fileName }) {
   );
 }
 
-function AttachmentContent({ message, onOpenMedia }) {
+function AttachmentContent({ message, onOpenMedia, onMediaLoad }) {
   const { type, attachment, content } = message;
   const url = resolveAvatarUrl(attachment?.url);
 
@@ -77,7 +77,12 @@ function AttachmentContent({ message, onOpenMedia }) {
           className="message-image-link"
           onClick={() => onOpenMedia({ type: "image", url, fileName: attachment.fileName })}
         >
-          <img src={url} alt={attachment.fileName || "photo"} className="message-image" />
+          <img
+            src={url}
+            alt={attachment.fileName || "photo"}
+            className="message-image"
+            onLoad={onMediaLoad}
+          />
         </div>
         {content && <span className="message-content message-caption">{content}</span>}
       </>
@@ -95,7 +100,7 @@ function AttachmentContent({ message, onOpenMedia }) {
           className="message-video-wrapper"
           onClick={() => onOpenMedia({ type: "video", url, fileName: attachment.fileName })}
         >
-          <video src={url} className="message-video" preload="metadata" muted />
+          <video src={url} className="message-video" preload="metadata" muted onLoadedMetadata={onMediaLoad} />
           <span className="message-video-play">
             <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
           </span>
@@ -135,7 +140,7 @@ function AttachmentContent({ message, onOpenMedia }) {
   return <span className="message-content">{content}</span>;
 }
 
-export default function MessageBubble({ message, isOwn, onOpenMedia }) {
+export default function MessageBubble({ message, isOwn, onOpenMedia, onMediaLoad }) {
   const isMedia = message.type && message.type !== "text";
 
   return (
@@ -145,7 +150,7 @@ export default function MessageBubble({ message, isOwn, onOpenMedia }) {
           isMedia ? `bubble-${message.type}` : ""
         }`}
       >
-        <AttachmentContent message={message} onOpenMedia={onOpenMedia} />
+        <AttachmentContent message={message} onOpenMedia={onOpenMedia} onMediaLoad={onMediaLoad} />
         <span className="message-meta">
           <span className="message-time">{formatTime(message.createdAt)}</span>
           {isOwn && <Ticks status={message.status} />}

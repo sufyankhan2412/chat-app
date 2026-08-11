@@ -1,13 +1,15 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useProfileModal } from "../context/Profilemodalcontext";
 import { useAuth } from "../context/Authcontext";
+import { useSocket } from "../context/Socketcontext";
 import { updateProfile } from "../api";
 import { resolveAvatarUrl } from "../utils/avatar";
 import { formatLastSeen } from "../utils/formatLastSeen";
 
 export default function ProfileModal() {
-  const { profileUser, isOwnProfile, closeProfile } = useProfileModal();
+  const { profileUser, isOwnProfile, closeProfile, updateProfileStatus } = useProfileModal();
   const { setUser } = useAuth();
+  const socket = useSocket();
 
   const [editing, setEditing] = useState(false);
   const [username, setUsername] = useState("");
@@ -36,6 +38,27 @@ export default function ProfileModal() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [profileUser, closeProfile]);
+
+  // Keep the open profile's online/offline status live, same as Sidebar/ChatWindow
+  useEffect(() => {
+    if (!socket || !profileUser || isOwnProfile) return;
+
+    const handleOnline = ({ userId }) => {
+      updateProfileStatus(userId, { isOnline: true });
+    };
+
+    const handleOffline = ({ userId, lastSeen }) => {
+      updateProfileStatus(userId, { isOnline: false, lastSeen });
+    };
+
+    socket.on("userOnline", handleOnline);
+    socket.on("userOffline", handleOffline);
+
+    return () => {
+      socket.off("userOnline", handleOnline);
+      socket.off("userOffline", handleOffline);
+    };
+  }, [socket, profileUser, isOwnProfile, updateProfileStatus]);
 
   if (!profileUser) return null;
 
