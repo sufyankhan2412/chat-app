@@ -7,15 +7,41 @@ import { formatDuration } from "../utils/formatFileSize";
 // between browsers.
 export default function VoicePlayer({ src, duration }) {
   const audioRef = useRef(null);
+  const rafRef = useRef(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [knownDuration, setKnownDuration] = useState(duration || 0);
+
+  // The native "timeupdate" event only fires a few times a second, which is
+  // why the fill used to visibly step instead of gliding. Driving it from
+  // requestAnimationFrame instead updates on every paint (~60fps), matching
+  // WhatsApp's smooth motion.
+  const tick = () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    setCurrentTime(audio.currentTime);
+    rafRef.current = requestAnimationFrame(tick);
+  };
+
+  const stopTicking = () => {
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+  };
 
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
 
-    const handleTimeUpdate = () => setCurrentTime(audio.currentTime);
+    const handlePlay = () => {
+      stopTicking();
+      rafRef.current = requestAnimationFrame(tick);
+    };
+    const handlePauseOrEnded = () => {
+      stopTicking();
+      setCurrentTime(audio.currentTime);
+    };
     const handleLoadedMetadata = () => {
       // Some browsers report Infinity for streamed/webm blobs until
       // playback starts; fall back to the duration the recorder measured.
@@ -25,15 +51,21 @@ export default function VoicePlayer({ src, duration }) {
       setIsPlaying(false);
       setCurrentTime(0);
     };
+    const handleSeeked = () => setCurrentTime(audio.currentTime);
 
-    audio.addEventListener("timeupdate", handleTimeUpdate);
+    audio.addEventListener("play", handlePlay);
+    audio.addEventListener("pause", handlePauseOrEnded);
     audio.addEventListener("loadedmetadata", handleLoadedMetadata);
     audio.addEventListener("ended", handleEnded);
+    audio.addEventListener("seeked", handleSeeked);
 
     return () => {
-      audio.removeEventListener("timeupdate", handleTimeUpdate);
+      stopTicking();
+      audio.removeEventListener("play", handlePlay);
+      audio.removeEventListener("pause", handlePauseOrEnded);
       audio.removeEventListener("loadedmetadata", handleLoadedMetadata);
       audio.removeEventListener("ended", handleEnded);
+      audio.removeEventListener("seeked", handleSeeked);
     };
   }, []);
 

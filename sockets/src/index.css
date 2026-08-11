@@ -1140,6 +1140,7 @@ body {
   bottom: 0;
   background: #128c7e;
   border-radius: 2px;
+  will-change: width;
 }
 
 .voice-duration {
