@@ -2,9 +2,10 @@ import React, { useEffect, useRef, useState } from "react";
 import { useProfileModal } from "../context/Profilemodalcontext";
 import { useAuth } from "../context/Authcontext";
 import { useSocket } from "../context/Socketcontext";
-import { updateProfile } from "../api";
+import { updateProfile, blockUser, unblockUser } from "../api";
 import { resolveAvatarUrl } from "../utils/avatar";
 import { formatLastSeen } from "../utils/formatLastSeen";
+import BlockedContacts from "./BlockedContacts";
 
 export default function ProfileModal() {
   const { profileUser, isOwnProfile, closeProfile, updateProfileStatus } = useProfileModal();
@@ -18,6 +19,8 @@ export default function ProfileModal() {
   const [error, setError] = useState("");
   const [avatarPreview, setAvatarPreview] = useState(null);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const [blocking, setBlocking] = useState(false);
+  const [showBlockedList, setShowBlockedList] = useState(false);
   const fileInputRef = useRef(null);
 
   // Reset local edit state whenever a (possibly different) profile is opened
@@ -28,8 +31,30 @@ export default function ProfileModal() {
       setEditing(false);
       setError("");
       setAvatarPreview(null);
+      setShowBlockedList(false);
     }
   }, [profileUser]);
+
+  // Keep the block state live if it changes elsewhere (e.g. unblocked from
+  // the "Blocked contacts" list while this same profile happens to be open).
+  useEffect(() => {
+    if (!socket || !profileUser || isOwnProfile) return;
+
+    const handleBlocked = ({ userId }) => {
+      updateProfileStatus(userId, { isBlocked: true });
+    };
+    const handleUnblocked = ({ userId }) => {
+      updateProfileStatus(userId, { isBlocked: false });
+    };
+
+    socket.on("contactBlocked", handleBlocked);
+    socket.on("contactUnblocked", handleUnblocked);
+
+    return () => {
+      socket.off("contactBlocked", handleBlocked);
+      socket.off("contactUnblocked", handleUnblocked);
+    };
+  }, [socket, profileUser, isOwnProfile, updateProfileStatus]);
 
   // Close on Escape
   useEffect(() => {
@@ -121,7 +146,48 @@ export default function ProfileModal() {
     setEditing(false);
   };
 
+  // Block/unblock the person whose profile is open. Works from a contact's
+  // "Contact info" screen, any time — matches WhatsApp's block/unblock flow.
+  const handleToggleBlock = async () => {
+    if (!profileUser || isOwnProfile) return;
+    setError("");
+    setBlocking(true);
+    try {
+      if (profileUser.isBlocked) {
+        await unblockUser(profileUser._id);
+        updateProfileStatus(profileUser._id, { isBlocked: false });
+      } else {
+        await blockUser(profileUser._id);
+        updateProfileStatus(profileUser._id, { isBlocked: true });
+      }
+    } catch (err) {
+      setError(err.response?.data?.message || "Something went wrong");
+    } finally {
+      setBlocking(false);
+    }
+  };
+
   const displayAvatar = avatarPreview || resolveAvatarUrl(profileUser.avatar);
+
+  if (isOwnProfile && showBlockedList) {
+    return (
+      <div className="modal-overlay" onClick={closeProfile}>
+        <div className="profile-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="profile-modal-header">
+            <button
+              className="modal-back-btn"
+              onClick={() => setShowBlockedList(false)}
+              title="Back"
+            >
+              ←
+            </button>
+            <span>Blocked contacts</span>
+          </div>
+          <BlockedContacts />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="modal-overlay" onClick={closeProfile}>
@@ -201,7 +267,9 @@ export default function ProfileModal() {
             <div className="profile-field">
               <label>Status</label>
               <p>
-                {profileUser.isOnline
+                {profileUser.isBlocked
+                  ? "Blocked"
+                  : profileUser.isOnline
                   ? "Online"
                   : formatLastSeen(profileUser.lastSeen)}
               </p>
@@ -228,13 +296,37 @@ export default function ProfileModal() {
                   </button>
                 </>
               ) : (
-                <button
-                  className="profile-btn-primary"
-                  onClick={() => setEditing(true)}
-                >
-                  Edit Profile
-                </button>
+                <>
+                  <button
+                    className="profile-btn-secondary"
+                    onClick={() => setShowBlockedList(true)}
+                  >
+                    Blocked contacts
+                  </button>
+                  <button
+                    className="profile-btn-primary"
+                    onClick={() => setEditing(true)}
+                  >
+                    Edit Profile
+                  </button>
+                </>
               )}
+            </div>
+          )}
+
+          {!isOwnProfile && (
+            <div className="profile-actions">
+              <button
+                className={profileUser.isBlocked ? "profile-btn-secondary" : "profile-btn-danger"}
+                onClick={handleToggleBlock}
+                disabled={blocking}
+              >
+                {blocking
+                  ? "Please wait..."
+                  : profileUser.isBlocked
+                  ? `Unblock ${profileUser.username}`
+                  : `Block ${profileUser.username}`}
+              </button>
             </div>
           )}
         </div>

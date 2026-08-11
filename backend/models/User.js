@@ -42,6 +42,16 @@ const userSchema = new mongoose.Schema(
       type: Date,
       default: Date.now,
     },
+    // Users this account has blocked. One-directional (like WhatsApp): I stop
+    // getting their messages and stop being able to send them mine, but it
+    // doesn't affect their own contact list or blockedUsers array.
+    blockedUsers: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+        default: [],
+      },
+    ],
   },
   { timestamps: true }
 );

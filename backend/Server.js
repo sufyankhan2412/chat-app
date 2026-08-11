@@ -28,6 +28,10 @@ const io = new Server(server, {
 app.use(cors({ origin: CLIENT_URL }));
 app.use(express.json());
 
+// Give REST routes access to the socket.io instance (used by the
+// block/unblock routes to notify the user's other open tabs/devices).
+app.set("io", io);
+
 // Serve locally-stored avatar uploads (backend/uploads/avatars/*)
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 

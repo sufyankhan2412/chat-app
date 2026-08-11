@@ -1,5 +1,5 @@
 ﻿import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { getMessages, uploadAttachment } from "../api";
+import { getMessages, uploadAttachment, unblockUser } from "../api";
 import { useSocket } from "../context/Socketcontext";
 import { useAuth } from "../context/Authcontext";
 import { useProfileModal } from "../context/Profilemodalcontext";
@@ -37,6 +37,8 @@ export default function ChatWindow({ contact, onBack }) {
     isOnline: contact?.isOnline,
     lastSeen: contact?.lastSeen,
   });
+  const [isBlocked, setIsBlocked] = useState(Boolean(contact?.isBlocked));
+  const [sendError, setSendError] = useState("");
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [hasMoreOlder, setHasMoreOlder] = useState(false);
@@ -83,6 +85,8 @@ export default function ChatWindow({ contact, onBack }) {
     const contactId = String(contact._id);
     setIsOtherTyping(false);
     setContactStatus({ isOnline: contact.isOnline, lastSeen: contact.lastSeen });
+    setIsBlocked(Boolean(contact.isBlocked));
+    setSendError("");
 
     const cached = messageCacheRef.current.get(contactId);
     setMessages(cached?.messages || []);
@@ -274,6 +278,19 @@ export default function ChatWindow({ contact, onBack }) {
       }
     };
 
+    // Fired back at me (all my open tabs) right after I block/unblock this
+    // contact, so the composer disables/re-enables without a page reload.
+    const handleContactBlocked = ({ userId }) => {
+      if (String(userId) === contactId) setIsBlocked(true);
+    };
+    const handleContactUnblocked = ({ userId }) => {
+      if (String(userId) === contactId) setIsBlocked(false);
+    };
+
+    const handleErrorMessage = ({ message }) => {
+      setSendError(message || "Message could not be sent");
+    };
+
     socket.on("receiveMessage", handleReceiveMessage);
     socket.on("messageSent", handleMessageSent);
     socket.on("messagesDelivered", handleMessagesDelivered);
@@ -282,6 +299,9 @@ export default function ChatWindow({ contact, onBack }) {
     socket.on("stopTyping", handleStopTyping);
     socket.on("userOnline", handleUserOnline);
     socket.on("userOffline", handleUserOffline);
+    socket.on("contactBlocked", handleContactBlocked);
+    socket.on("contactUnblocked", handleContactUnblocked);
+    socket.on("errorMessage", handleErrorMessage);
 
     return () => {
       socket.off("receiveMessage", handleReceiveMessage);
@@ -292,8 +312,18 @@ export default function ChatWindow({ contact, onBack }) {
       socket.off("stopTyping", handleStopTyping);
       socket.off("userOnline", handleUserOnline);
       socket.off("userOffline", handleUserOffline);
+      socket.off("contactBlocked", handleContactBlocked);
+      socket.off("contactUnblocked", handleContactUnblocked);
+      socket.off("errorMessage", handleErrorMessage);
     };
   }, [socket, contact, user]);
+
+  // Auto-dismiss the inline send-error banner after a few seconds
+  useEffect(() => {
+    if (!sendError) return;
+    const t = setTimeout(() => setSendError(""), 4000);
+    return () => clearTimeout(t);
+  }, [sendError]);
 
   useLayoutEffect(() => {
     const el = messagesContainerRef.current;
@@ -548,6 +578,7 @@ export default function ChatWindow({ contact, onBack }) {
 
   const handleSend = (e) => {
     e.preventDefault();
+    if (isBlocked) return;
     if (pendingFile) return handleSendAttachment();
     if (!input.trim() || !socket || !contact) return;
 
@@ -561,6 +592,16 @@ export default function ChatWindow({ contact, onBack }) {
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     isTypingRef.current = false;
     socket.emit("stopTyping", { receiverId: contact._id });
+  };
+
+  const handleUnblockFromChat = async () => {
+    if (!contact) return;
+    try {
+      await unblockUser(contact._id);
+      setIsBlocked(false);
+    } catch (err) {
+      console.error("Failed to unblock:", err);
+    }
   };
 
   if (!contact) {
@@ -687,6 +728,19 @@ export default function ChatWindow({ contact, onBack }) {
         </div>
       )}
 
+      {sendError && !isBlocked && (
+        <div className="send-error-banner">{sendError}</div>
+      )}
+
+      {isBlocked ? (
+        <div className="blocked-banner">
+          <span>You blocked {contact.username}. Unblock to send messages.</span>
+          <button type="button" className="profile-btn-secondary" onClick={handleUnblockFromChat}>
+            Unblock
+          </button>
+        </div>
+      ) : (
+        <>
       {/* Hidden pickers, opened via the attachment menu below */}
       <input
         ref={mediaInputRef}
@@ -770,6 +824,8 @@ export default function ChatWindow({ contact, onBack }) {
           </button>
         )}
       </form>
+        </>
+      )}
 
       <MediaViewer media={viewerMedia} onClose={() => setViewerMedia(null)} />
     </div>

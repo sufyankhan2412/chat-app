@@ -60,4 +60,10 @@ export const updateProfile = (formData) =>
 
 export const getUserProfile = (id) => api.get(`/users/${id}`);
 
+export const blockUser = (id) => api.post(`/users/block/${id}`);
+
+export const unblockUser = (id) => api.post(`/users/unblock/${id}`);
+
+export const getBlockedUsers = () => api.get("/users/blocked");
+
 export default api;

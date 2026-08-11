@@ -99,6 +99,31 @@ useEffect(() => {
     };
   }, [socket]);
 
+  // Keep each contact's blocked state live — fired back to me (all my open
+  // tabs) whenever I block/unblock someone, from any screen.
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleBlocked = ({ userId }) => {
+      setContacts((prev) =>
+        prev.map((c) => (String(c._id) === String(userId) ? { ...c, isBlocked: true } : c))
+      );
+    };
+    const handleUnblocked = ({ userId }) => {
+      setContacts((prev) =>
+        prev.map((c) => (String(c._id) === String(userId) ? { ...c, isBlocked: false } : c))
+      );
+    };
+
+    socket.on("contactBlocked", handleBlocked);
+    socket.on("contactUnblocked", handleUnblocked);
+
+    return () => {
+      socket.off("contactBlocked", handleBlocked);
+      socket.off("contactUnblocked", handleUnblocked);
+    };
+  }, [socket]);
+
   // Replace a contact's last-message preview and bump that contact to the
   // top of the list, the same way WhatsApp bubbles the active chat up.
   const upsertLastMessage = (contactId, lastMessage) => {
@@ -245,10 +270,18 @@ useEffect(() => {
                 </div>
                 <div className="contact-bottom-row">
                   <span className={`contact-last-message ${isUnread ? "unread" : ""}`}>
-                    {isOwnLastMsg && <PreviewTicks status={lastMsg.status} />}
-                    <span className="contact-last-message-text">
-                      {lastMsg ? previewText(lastMsg) : "Say hi 👋"}
-                    </span>
+                    {c.isBlocked ? (
+                      <span className="contact-last-message-text contact-blocked-label">
+                        Blocked
+                      </span>
+                    ) : (
+                      <>
+                        {isOwnLastMsg && <PreviewTicks status={lastMsg.status} />}
+                        <span className="contact-last-message-text">
+                          {lastMsg ? previewText(lastMsg) : "Say hi 👋"}
+                        </span>
+                      </>
+                    )}
                   </span>
                 </div>
               </div>

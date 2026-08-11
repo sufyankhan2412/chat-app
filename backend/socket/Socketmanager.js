@@ -117,6 +117,30 @@ try {
         if (isTextMessage && (!content || !content.trim())) return;
         if (!isTextMessage && !attachment?.url) return;
 
+        // Block check, both directions: if either side has blocked the
+        // other, the message is silently refused — mirrors WhatsApp, where
+        // a blocked contact never learns their message didn't go through.
+        const [me, receiverUser] = await Promise.all([
+          User.findById(userId).select("blockedUsers"),
+          User.findById(receiverId).select("blockedUsers"),
+        ]);
+
+        const iBlockedThem = (me?.blockedUsers || []).some(
+          (id) => String(id) === String(receiverId)
+        );
+        const theyBlockedMe = (receiverUser?.blockedUsers || []).some(
+          (id) => String(id) === String(userId)
+        );
+
+        if (iBlockedThem || theyBlockedMe) {
+          socket.emit("errorMessage", {
+            message: iBlockedThem
+              ? "You've blocked this contact. Unblock them to send messages."
+              : "This message could not be delivered.",
+          });
+          return;
+        }
+
         const receiverSocketIds = getReceiverSocketIds(receiverId);
         const status = receiverSocketIds.length ? "delivered" : "sent";
 

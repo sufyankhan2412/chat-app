@@ -107,6 +107,9 @@ router.get("/contacts", protect, async (req, res) => {
       .lean();
 
     const usersById = new Map(users.map((u) => [String(u._id), u]));
+    const blockedIds = new Set(
+      (req.user.blockedUsers || []).map((id) => String(id))
+    );
 
     const contacts = allPartnerIds
       .map((id) => {
@@ -115,6 +118,7 @@ router.get("/contacts", protect, async (req, res) => {
         return {
           ...user,
           lastMessage: lastMessageMap.get(id) || null,
+          isBlocked: blockedIds.has(id),
         };
       })
       .filter(Boolean)
@@ -184,6 +188,83 @@ router.put(
   }
 );
 
+// @route  POST /api/users/block/:id
+// Block a user, WhatsApp-style: I stop receiving their messages and can't
+// send them mine, but their contact list/blocked list is untouched.
+router.post("/block/:id", protect, async (req, res) => {
+  try {
+    const targetId = req.params.id;
+
+    if (targetId === String(req.user._id)) {
+      return res.status(400).json({ message: "You cannot block yourself" });
+    }
+
+    const targetUser = await User.findById(targetId).select(
+      "username email avatar isOnline lastSeen"
+    );
+    if (!targetUser) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    await User.findByIdAndUpdate(req.user._id, {
+      $addToSet: { blockedUsers: targetId },
+    });
+
+    // Let this user's other open tabs/devices know instantly
+    const io = req.app.get("io");
+    if (io) {
+      io.to(`user_${req.user._id}`).emit("contactBlocked", { userId: targetId });
+    }
+
+    res.json({ user: targetUser, isBlocked: true });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// @route  POST /api/users/unblock/:id
+// Reverse of the above — can be done any time from the contact's profile
+// or from the "Blocked contacts" list.
+router.post("/unblock/:id", protect, async (req, res) => {
+  try {
+    const targetId = req.params.id;
+
+    const targetUser = await User.findById(targetId).select(
+      "username email avatar isOnline lastSeen"
+    );
+    if (!targetUser) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    await User.findByIdAndUpdate(req.user._id, {
+      $pull: { blockedUsers: targetId },
+    });
+
+    const io = req.app.get("io");
+    if (io) {
+      io.to(`user_${req.user._id}`).emit("contactUnblocked", { userId: targetId });
+    }
+
+    res.json({ user: targetUser, isBlocked: false });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// @route  GET /api/users/blocked
+// List everyone I've blocked, for the "Blocked contacts" screen.
+router.get("/blocked", protect, async (req, res) => {
+  try {
+    const me = await User.findById(req.user._id).populate(
+      "blockedUsers",
+      "username email avatar isOnline lastSeen"
+    );
+    res.json({ users: me?.blockedUsers || [] });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
 // @route  GET /api/users/:id
 // View another user's public profile (e.g. tapping their name/avatar in a chat)
 // NOTE: keep this registered last so it doesn't swallow the routes above
@@ -195,7 +276,12 @@ router.get("/:id", protect, async (req, res) => {
     if (!targetUser) {
       return res.status(404).json({ message: "User not found" });
     }
-    res.json({ user: targetUser });
+
+    const isBlocked = (req.user.blockedUsers || []).some(
+      (id) => String(id) === String(targetUser._id)
+    );
+
+    res.json({ user: { ...targetUser.toObject(), isBlocked } });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
