@@ -1,5 +1,5 @@
 ﻿import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { getMessages, uploadAttachment, unblockUser, deleteChat, starMessage, unstarMessage } from "../api";
+import { getMessages, uploadAttachment, blockUser, unblockUser, deleteChat, starMessage, unstarMessage } from "../api";
 import { useSocket } from "../context/Socketcontext";
 import { useAuth } from "../context/Authcontext";
 import { useProfileModal } from "../context/Profilemodalcontext";
@@ -50,6 +50,10 @@ export default function ChatWindow({ contact, onBack }) {
   const [pendingFile, setPendingFile] = useState(null); // { file, type, previewUrl }
   const [isUploading, setIsUploading] = useState(false);
 
+  // ---- Chat header "⋮" menu (Block user) ----
+  const [isHeaderMenuOpen, setIsHeaderMenuOpen] = useState(false);
+  const [headerMenuBusy, setHeaderMenuBusy] = useState(false);
+
   // ---- Voice recording state ----
   const [isRecording, setIsRecording] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
@@ -72,6 +76,7 @@ export default function ChatWindow({ contact, onBack }) {
   const mediaInputRef = useRef(null);
   const fileInputRef = useRef(null);
   const attachMenuRef = useRef(null);
+  const headerMenuRef = useRef(null);
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
   const recordingIntervalRef = useRef(null);
@@ -391,6 +396,31 @@ export default function ChatWindow({ contact, onBack }) {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [isAttachMenuOpen]);
 
+  // Close the chat-header "⋮" menu when clicking outside it, or on Escape
+  useEffect(() => {
+    if (!isHeaderMenuOpen) return;
+    const handleClickOutside = (e) => {
+      if (headerMenuRef.current && !headerMenuRef.current.contains(e.target)) {
+        setIsHeaderMenuOpen(false);
+      }
+    };
+    const handleKey = (e) => {
+      if (e.key === "Escape") setIsHeaderMenuOpen(false);
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    document.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("keydown", handleKey);
+    };
+  }, [isHeaderMenuOpen]);
+
+  // Never leave the menu open (or mid-request) when switching chats
+  useEffect(() => {
+    setIsHeaderMenuOpen(false);
+    setHeaderMenuBusy(false);
+  }, [contact?._id]);
+
   // Switching contacts mid-flow (new chat clicked) should drop any
   // in-progress attachment/recording rather than silently sending it later.
   useEffect(() => {
@@ -605,6 +635,26 @@ export default function ChatWindow({ contact, onBack }) {
     }
   };
 
+  // Block/unblock from the "⋮" menu in the chat header.
+  const handleToggleBlockFromMenu = async () => {
+    if (!contact || headerMenuBusy) return;
+    setHeaderMenuBusy(true);
+    try {
+      if (isBlocked) {
+        await unblockUser(contact._id);
+        setIsBlocked(false);
+      } else {
+        await blockUser(contact._id);
+        setIsBlocked(true);
+      }
+      setIsHeaderMenuOpen(false);
+    } catch (err) {
+      console.error("Failed to toggle block:", err);
+    } finally {
+      setHeaderMenuBusy(false);
+    }
+  };
+
   const handleDeleteChat = async () => {
     if (!contact || deletingChat) return;
     const confirmed = window.confirm(
@@ -706,6 +756,44 @@ export default function ChatWindow({ contact, onBack }) {
   ? "Online"
   : formatLastSeen(contactStatus.lastSeen)}
           </span>
+        </div>
+
+        <div className="chat-header-menu-wrapper" ref={headerMenuRef}>
+          <button
+            type="button"
+            className="icon-btn chat-header-menu-btn"
+            onClick={(e) => {
+              e.stopPropagation();
+              setIsHeaderMenuOpen((v) => !v);
+            }}
+            title="Menu"
+          >
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+              <circle cx="12" cy="5" r="2" />
+              <circle cx="12" cy="12" r="2" />
+              <circle cx="12" cy="19" r="2" />
+            </svg>
+          </button>
+
+          {isHeaderMenuOpen && (
+            <div className="chat-header-menu" onClick={(e) => e.stopPropagation()}>
+              <button
+                type="button"
+                className="chat-header-menu-item chat-header-menu-item-danger"
+                onClick={handleToggleBlockFromMenu}
+                disabled={headerMenuBusy}
+              >
+                <span className="chat-header-menu-item-icon" aria-hidden="true">⛔</span>
+                <span>
+                  {headerMenuBusy
+                    ? "Please wait..."
+                    : isBlocked
+                    ? `Unblock ${contact.username}`
+                    : `Block ${contact.username}`}
+                </span>
+              </button>
+            </div>
+          )}
         </div>
       </div>
 

@@ -74,26 +74,66 @@ router.get("/:userId", protect, async (req, res) => {
   }
 });
 
+// Matches http(s):// and bare "www." links inside a text message, the same
+// way WhatsApp detects links to populate its "Links" tab.
+const URL_REGEX = /((?:https?:\/\/|www\.)[^\s<>"']+)/gi;
+
 // @route  GET /api/messages/:userId/media
 // All image/video/file attachments shared with this contact (either
-// direction), newest first — powers the "Media, links and docs" screen.
+// direction), newest first, plus any links found inside text messages —
+// powers the tabbed "Media, links and docs" screen.
 router.get("/:userId/media", protect, async (req, res) => {
   try {
     const otherUserId = req.params.userId;
     const myId = req.user._id;
     const limit = Math.min(parseInt(req.query.limit, 10) || 60, 200);
 
-    const media = await Message.find({
-      type: { $in: ["image", "video", "file"] },
-      $or: [
-        { sender: myId, receiver: otherUserId },
-        { sender: otherUserId, receiver: myId },
-      ],
-    })
-      .sort({ createdAt: -1 })
-      .limit(limit);
+    const [media, textMessages] = await Promise.all([
+      Message.find({
+        type: { $in: ["image", "video", "file"] },
+        $or: [
+          { sender: myId, receiver: otherUserId },
+          { sender: otherUserId, receiver: myId },
+        ],
+      })
+        .sort({ createdAt: -1 })
+        .limit(limit),
+      // Only text messages can contain links, and only ones that actually
+      // match a URL are worth pulling across the wire.
+      Message.find({
+        type: "text",
+        content: URL_REGEX,
+        $or: [
+          { sender: myId, receiver: otherUserId },
+          { sender: otherUserId, receiver: myId },
+        ],
+      })
+        .sort({ createdAt: -1 })
+        .limit(limit),
+    ]);
 
-    res.json({ media });
+    // Turn each matching text message into one or more synthetic "link"
+    // media entries (a message can contain more than one URL).
+    const links = [];
+    for (const msg of textMessages) {
+      const found = msg.content.match(URL_REGEX) || [];
+      found.forEach((url, i) => {
+        links.push({
+          _id: `${msg._id}-${i}`,
+          type: "link",
+          sender: msg.sender,
+          receiver: msg.receiver,
+          createdAt: msg.createdAt,
+          link: {
+            url: url.startsWith("http") ? url : `https://${url}`,
+            text: msg.content,
+          },
+        });
+      });
+    }
+    links.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+    res.json({ media, links: links.slice(0, limit) });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

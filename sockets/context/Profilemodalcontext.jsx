@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useCallback } from "react";
+import React, { createContext, useContext, useState, useCallback, useMemo } from "react";
 import { getUserProfile } from "../api";
 
 const ProfileModalContext = createContext();
@@ -53,18 +53,26 @@ export const ProfileModalProvider = ({ children }) => {
     });
   }, []);
 
+  // Memoized so that toggling something inside the modal (mute, block,
+  // disappearing messages, etc.) doesn't hand every other consumer of this
+  // context — Sidebar, ChatWindow — a brand-new object reference and force
+  // them to re-render too. That extra churn is what produced the visible
+  // "jerk" elsewhere in the app whenever a button was clicked in Contact info.
+  const value = useMemo(
+    () => ({
+      profileUser,
+      isOwnProfile,
+      loading,
+      openOwnProfile,
+      openUserProfile,
+      closeProfile,
+      updateProfileStatus,
+    }),
+    [profileUser, isOwnProfile, loading, openOwnProfile, openUserProfile, closeProfile, updateProfileStatus]
+  );
+
   return (
-    <ProfileModalContext.Provider
-      value={{
-        profileUser,
-        isOwnProfile,
-        loading,
-        openOwnProfile,
-        openUserProfile,
-        closeProfile,
-        updateProfileStatus,
-      }}
-    >
+    <ProfileModalContext.Provider value={value}>
       {children}
     </ProfileModalContext.Provider>
   );
