@@ -692,21 +692,68 @@ body {
   cursor: not-allowed;
 }
 
-/* ---------- Block/unblock banners in the chat window ---------- */
-.blocked-banner {
+/* ---------- Blocked chat state ----------
+   Matches WhatsApp mobile: a centered gray "tap to unblock" pill sitting
+   where the date separator would be, then a Delete chat / Unblock action
+   row in place of the message input bar. */
+.blocked-state {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 16px;
-  background: #fff2f2;
-  border-top: 1px solid #ffd8d8;
-  color: #b3261e;
-  font-size: 13.5px;
+  gap: 4px;
+  padding: 10px 16px 14px;
+  background: #f0f2f1;
+  border-top: 1px solid #e9edef;
 }
 
-.blocked-banner span {
-  flex: 1;
+.blocked-pill {
+  background: rgba(0, 0, 0, 0.06);
+  color: #54656f;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 12.5px;
+  text-align: center;
+  cursor: pointer;
+  max-width: 90%;
+}
+
+.blocked-pill:hover {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.blocked-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 48px;
+  width: 100%;
+  padding-top: 6px;
+}
+
+.blocked-action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 6px 4px;
+}
+
+.blocked-action:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.blocked-action-delete {
+  color: #f15c6d;
+}
+
+.blocked-action-unblock {
+  color: #00a884;
 }
 
 .send-error-banner {
@@ -1256,25 +1303,27 @@ body {
 .profile-modal-header {
   display: flex;
   align-items: center;
-  gap: 18px;
-  background: #075e54;
-  color: #fff;
-  padding: 18px 20px;
+  gap: 22px;
+  background: #f0f2f1;
+  color: #111b21;
+  padding: 16px 20px;
   font-size: 17px;
   font-weight: 600;
+  border-bottom: 1px solid #e9edef;
+  flex-shrink: 0;
 }
 
 .modal-back-btn {
   background: transparent;
   border: none;
-  color: #fff;
+  color: #54656f;
   font-size: 20px;
   cursor: pointer;
   line-height: 1;
 }
 
 .profile-modal-body {
-  padding: 28px 24px 24px;
+  padding: 0 0 12px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -1283,11 +1332,11 @@ body {
 
 .profile-avatar-wrapper {
   position: relative;
-  width: 150px;
-  height: 150px;
+  width: 200px;
+  height: 200px;
   border-radius: 50%;
   overflow: hidden;
-  margin-bottom: 24px;
+  margin: 32px 0 16px;
   flex-shrink: 0;
 }
 
@@ -1323,22 +1372,100 @@ body {
 }
 
 .profile-error {
-  width: 100%;
+  width: calc(100% - 48px);
   background: #fff2f2;
   color: #b3261e;
   padding: 10px 12px;
   border-radius: 10px;
   font-size: 13px;
-  margin-bottom: 12px;
+  margin: 0 24px 12px;
   border: 1px solid #ffd8d8;
 }
 
-.profile-field {
+/* ---------- Name + status block (sits where WhatsApp puts the
+   contact's name and phone number, right under the avatar) ---------- */
+.profile-identity {
   width: 100%;
-  margin-bottom: 18px;
+  text-align: center;
+  padding: 0 24px 20px;
 }
 
-.profile-field label {
+.profile-name {
+  margin: 0 0 4px;
+  font-size: 21px;
+  font-weight: 600;
+  color: #111b21;
+  word-break: break-word;
+}
+
+.profile-name-input {
+  width: 100%;
+  text-align: center;
+  font-size: 18px;
+  font-weight: 600;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid #d7e1e8;
+  outline: none;
+  background: #f8fbfd;
+  font-family: inherit;
+  margin-bottom: 4px;
+}
+
+.profile-name-input:focus {
+  border-color: #128c7e;
+  box-shadow: 0 0 0 3px rgba(18, 140, 126, 0.16);
+}
+
+.profile-subtitle {
+  margin: 0;
+  font-size: 14px;
+  color: #667781;
+}
+
+/* Full-width hairline separating sections, like WhatsApp's contact info */
+.profile-divider {
+  width: 100%;
+  height: 8px;
+  background: #f7f8fa;
+  border-top: 1px solid #e9edef;
+  border-bottom: 1px solid #e9edef;
+}
+
+/* ---------- List-style rows (About, Edit profile, Blocked
+   contacts, Block contact) ---------- */
+.profile-list-section {
+  width: 100%;
+}
+
+.profile-list-row {
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: 20px;
+  padding: 16px 24px;
+  box-sizing: border-box;
+  background: transparent;
+  border: none;
+  text-align: left;
+  font-family: inherit;
+  cursor: default;
+}
+
+.profile-row-icon {
+  flex-shrink: 0;
+  width: 20px;
+  font-size: 18px;
+  color: #54656f;
+  line-height: 1.3;
+}
+
+.profile-row-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.profile-row-content label {
   display: block;
   font-size: 12px;
   color: #128c7e;
@@ -1348,19 +1475,15 @@ body {
   margin-bottom: 6px;
 }
 
-.profile-field p {
+.profile-row-content p {
+  margin: 0;
   font-size: 15px;
   color: #111b21;
   word-break: break-word;
   white-space: pre-wrap;
 }
 
-.profile-field-static {
-  color: #667781 !important;
-}
-
-.profile-field input,
-.profile-field textarea {
+.profile-row-content textarea {
   width: 100%;
   padding: 10px 12px;
   border-radius: 10px;
@@ -1372,18 +1495,50 @@ body {
   resize: none;
 }
 
-.profile-field input:focus,
-.profile-field textarea:focus {
+.profile-row-content textarea:focus {
   border-color: #128c7e;
   box-shadow: 0 0 0 3px rgba(18, 140, 126, 0.16);
 }
 
-.profile-actions {
+button.profile-row-button {
+  cursor: pointer;
+  align-items: center;
+  color: #111b21;
+  font-size: 15px;
+  transition: background 0.1s ease;
+}
+
+button.profile-row-button:hover {
+  background: #f5f6f6;
+}
+
+.profile-row-label {
+  flex: 1;
+}
+
+.profile-row-chevron {
+  color: #8696a0;
+  font-size: 18px;
+}
+
+button.profile-row-danger,
+button.profile-row-danger .profile-row-icon {
+  color: #ea0038;
+}
+
+button.profile-row-danger:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  background: transparent;
+}
+
+.profile-edit-actions {
   width: 100%;
   display: flex;
   justify-content: flex-end;
   gap: 10px;
-  margin-top: 8px;
+  padding: 16px 24px;
+  box-sizing: border-box;
 }
 
 .profile-btn-primary,
@@ -1411,15 +1566,310 @@ body {
   color: #333;
 }
 
-.profile-btn-danger {
-  background: #fff2f2;
-  color: #b3261e;
-  border: 1px solid #ffd8d8;
+/* ---------- Trailing content on a list row (count + chevron together) ---------- */
+.profile-row-trailing {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
 }
 
-.profile-btn-danger:disabled {
+.profile-row-count {
+  font-size: 13px;
+  color: #667781;
+}
+
+/* ---------- "Media, links and docs" preview strip on the main screen ---------- */
+.profile-media-row {
+  padding-bottom: 8px;
+}
+
+.profile-media-strip {
+  display: flex;
+  gap: 8px;
+  padding: 0 24px 16px;
+  box-sizing: border-box;
+}
+
+.profile-media-strip-thumb {
+  width: 64px;
+  height: 64px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #f0f2f1;
+  flex-shrink: 0;
+}
+
+.profile-media-strip-thumb img,
+.profile-media-strip-thumb video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.profile-media-strip-doc {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+}
+
+/* ---------- Toggle switch (Mute notifications) ---------- */
+.profile-toggle {
+  margin-left: auto;
+  flex-shrink: 0;
+  width: 40px;
+  height: 22px;
+  border-radius: 999px;
+  background: #d1d7db;
+  border: none;
+  padding: 2px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  transition: background 0.15s ease;
+}
+
+.profile-toggle.on {
+  background: #128c7e;
+}
+
+.profile-toggle:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+.profile-toggle-knob {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  transition: transform 0.15s ease;
+}
+
+.profile-toggle.on .profile-toggle-knob {
+  transform: translateX(18px);
+}
+
+/* ---------- Media gallery screen ("Media, links and docs") ---------- */
+.media-gallery-body {
+  padding: 4px 0 16px;
+  overflow-y: auto;
+}
+
+.media-gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 3px;
+  padding: 3px;
+}
+
+.media-gallery-thumb {
+  position: relative;
+  aspect-ratio: 1;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  background: #f0f2f1;
+  overflow: hidden;
+}
+
+.media-gallery-thumb img,
+.media-gallery-thumb video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.media-gallery-play {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.media-gallery-docs {
+  display: flex;
+  flex-direction: column;
+  padding: 8px 24px 0;
+}
+
+.media-gallery-doc-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 0;
+  border-bottom: 1px solid #f0f2f1;
+  text-decoration: none;
+  color: inherit;
+}
+
+.media-gallery-doc-row:last-child {
+  border-bottom: none;
+}
+
+.media-gallery-doc-icon {
+  font-size: 22px;
+  flex-shrink: 0;
+}
+
+.media-gallery-doc-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.media-gallery-doc-name {
+  font-size: 14px;
+  color: #111b21;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.media-gallery-doc-size {
+  font-size: 12px;
+  color: #667781;
+}
+
+/* ---------- Starred messages screen ---------- */
+.starred-messages-body {
+  padding: 8px 0 16px;
+  overflow-y: auto;
+}
+
+.starred-message-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 24px;
+  border-bottom: 1px solid #f0f2f1;
+}
+
+.starred-message-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.starred-message-sender {
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  color: #128c7e;
+  margin-bottom: 2px;
+}
+
+.starred-message-content p {
+  margin: 0;
+  font-size: 14px;
+  color: #111b21;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.starred-message-time {
+  display: block;
+  font-size: 11px;
+  color: #8696a0;
+  margin-top: 4px;
+}
+
+.starred-message-unstar {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: #f2c94c;
+  font-size: 17px;
+  line-height: 1;
+  padding: 2px;
+}
+
+/* ---------- Disappearing messages chooser ---------- */
+.disappearing-chooser-body {
+  padding: 8px 0 16px;
+}
+
+.disappearing-chooser-hint {
+  margin: 4px 24px 12px;
+  font-size: 13px;
+  color: #667781;
+  line-height: 1.5;
+}
+
+.disappearing-option-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 24px;
+  box-sizing: border-box;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid #f0f2f1;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+}
+
+.disappearing-option-row:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.disappearing-option-label {
+  font-size: 15px;
+  color: #111b21;
+}
+
+.disappearing-option-check {
+  color: #128c7e;
+  font-weight: 700;
+}
+
+/* ---------- Star button on a message bubble ---------- */
+.message-star-btn {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: none;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+  color: #c6c9cc;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.message-bubble:hover .message-star-btn {
+  opacity: 1;
+}
+
+.message-star-btn.starred {
+  color: #f2c94c;
+  opacity: 1;
+}
+
+.message-star-badge {
+  color: #f2c94c;
+  font-size: 10px;
+  margin-right: 2px;
 }
 
 /* ---------- Back button ----------
@@ -1566,8 +2016,9 @@ body {
   }
 
   .profile-avatar-wrapper {
-    width: 120px;
-    height: 120px;
+    width: 140px;
+    height: 140px;
+    margin: 24px 0 14px;
   }
 
   .profile-modal-header {
@@ -1575,7 +2026,15 @@ body {
     font-size: 16px;
   }
 
-  .profile-modal-body {
-    padding: 20px 18px 18px;
+  .profile-identity,
+  .profile-list-row,
+  .profile-edit-actions {
+    padding-left: 18px;
+    padding-right: 18px;
+  }
+
+  .profile-error {
+    width: calc(100% - 36px);
+    margin: 0 18px 12px;
   }
 }

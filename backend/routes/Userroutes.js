@@ -265,6 +265,80 @@ router.get("/blocked", protect, async (req, res) => {
   }
 });
 
+// @route  POST /api/users/mute/:id
+// Mute a contact's notifications. Purely local to my account — the other
+// person is never told and their messages still arrive as normal.
+router.post("/mute/:id", protect, async (req, res) => {
+  try {
+    const targetId = req.params.id;
+
+    await User.findByIdAndUpdate(req.user._id, {
+      $addToSet: { mutedUsers: targetId },
+    });
+
+    res.json({ isMuted: true });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// @route  POST /api/users/unmute/:id
+router.post("/unmute/:id", protect, async (req, res) => {
+  try {
+    const targetId = req.params.id;
+
+    await User.findByIdAndUpdate(req.user._id, {
+      $pull: { mutedUsers: targetId },
+    });
+
+    res.json({ isMuted: false });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// Allowed "disappearing messages" durations, in milliseconds (WhatsApp's
+// own preset list: 24 hours / 7 days / 90 days, or 0 for off).
+const DISAPPEARING_DURATIONS = [0, 86400000, 604800000, 7776000000];
+
+// @route  PUT /api/users/contacts/:id/disappearing
+// Turn disappearing messages on/off for this chat. Shared like WhatsApp:
+// written to both directions' Contact docs so either person sees the same
+// setting, and the other person's open tab is notified live.
+router.put("/contacts/:id/disappearing", protect, async (req, res) => {
+  try {
+    const targetId = req.params.id;
+    const duration = Number(req.body.duration);
+
+    if (!DISAPPEARING_DURATIONS.includes(duration)) {
+      return res.status(400).json({ message: "Invalid duration" });
+    }
+
+    await Contact.findOneAndUpdate(
+      { user: req.user._id, contact: targetId },
+      { user: req.user._id, contact: targetId, disappearingDuration: duration },
+      { upsert: true }
+    );
+    await Contact.findOneAndUpdate(
+      { user: targetId, contact: req.user._id },
+      { user: targetId, contact: req.user._id, disappearingDuration: duration },
+      { upsert: true }
+    );
+
+    const io = req.app.get("io");
+    if (io) {
+      io.to(`user_${targetId}`).emit("disappearingChanged", {
+        userId: String(req.user._id),
+        duration,
+      });
+    }
+
+    res.json({ duration });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
 // @route  GET /api/users/:id
 // View another user's public profile (e.g. tapping their name/avatar in a chat)
 // NOTE: keep this registered last so it doesn't swallow the routes above
@@ -280,8 +354,23 @@ router.get("/:id", protect, async (req, res) => {
     const isBlocked = (req.user.blockedUsers || []).some(
       (id) => String(id) === String(targetUser._id)
     );
+    const isMuted = (req.user.mutedUsers || []).some(
+      (id) => String(id) === String(targetUser._id)
+    );
 
-    res.json({ user: { ...targetUser.toObject(), isBlocked } });
+    const contactDoc = await Contact.findOne({
+      user: req.user._id,
+      contact: targetUser._id,
+    }).select("disappearingDuration");
+
+    res.json({
+      user: {
+        ...targetUser.toObject(),
+        isBlocked,
+        isMuted,
+        disappearingDuration: contactDoc?.disappearingDuration || 0,
+      },
+    });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

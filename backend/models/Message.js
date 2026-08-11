@@ -45,10 +45,30 @@ const messageSchema = new mongoose.Schema(
       enum: ["sent", "delivered", "read"],
       default: "sent",
     },
+
+    // Who has starred this message, WhatsApp-style: starring is private to
+    // each user, so the same message can be starred for one participant
+    // and not the other.
+    starredBy: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+        default: [],
+      },
+    ],
+
+    // Only set when the sender had "disappearing messages" turned on for
+    // this chat at send time. A TTL index (below) makes MongoDB delete the
+    // document itself once this time passes — no cron job needed.
+    expiresAt: {
+      type: Date,
+      default: null,
+    },
   },
   { timestamps: true }
 );
 
 messageSchema.index({ sender: 1, receiver: 1, createdAt: 1 });
+messageSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 module.exports = mongoose.model("Message", messageSchema);

@@ -45,6 +45,9 @@ export const getContacts = () =>
 export const getMessages = (userId, params = {}) =>
   api.get(`/messages/${userId}`, { params });
 
+// Deletes the full message history with this contact (both sides).
+export const deleteChat = (userId) => api.delete(`/messages/${userId}`);
+
 // Uploads one chat attachment (image/video/voice/file) and returns
 // { attachment: { url, fileName, fileSize, mimeType, duration? } }.
 // `type` must be appended to the FormData BEFORE `file` — see the
@@ -65,5 +68,22 @@ export const blockUser = (id) => api.post(`/users/block/${id}`);
 export const unblockUser = (id) => api.post(`/users/unblock/${id}`);
 
 export const getBlockedUsers = () => api.get("/users/blocked");
+
+export const muteUser = (id) => api.post(`/users/mute/${id}`);
+
+export const unmuteUser = (id) => api.post(`/users/unmute/${id}`);
+
+// duration is in milliseconds; 0 turns disappearing messages off
+export const setDisappearing = (id, duration) =>
+  api.put(`/users/contacts/${id}/disappearing`, { duration });
+
+export const getMedia = (userId) => api.get(`/messages/${userId}/media`);
+
+export const getStarredMessages = (userId) =>
+  api.get(`/messages/${userId}/starred`);
+
+export const starMessage = (id) => api.post(`/messages/${id}/star`);
+
+export const unstarMessage = (id) => api.post(`/messages/${id}/unstar`);
 
 export default api;

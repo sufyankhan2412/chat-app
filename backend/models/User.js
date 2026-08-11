@@ -52,6 +52,17 @@ const userSchema = new mongoose.Schema(
         default: [],
       },
     ],
+
+    // Contacts whose messages shouldn't trigger a notification for me.
+    // One-directional and purely local to this account, like WhatsApp's
+    // per-chat mute — it doesn't stop messages from arriving, just alerts.
+    mutedUsers: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+        default: [],
+      },
+    ],
   },
   { timestamps: true }
 );

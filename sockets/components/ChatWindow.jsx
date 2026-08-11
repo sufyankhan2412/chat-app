@@ -1,5 +1,5 @@
 ﻿import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { getMessages, uploadAttachment, unblockUser } from "../api";
+import { getMessages, uploadAttachment, unblockUser, deleteChat, starMessage, unstarMessage } from "../api";
 import { useSocket } from "../context/Socketcontext";
 import { useAuth } from "../context/Authcontext";
 import { useProfileModal } from "../context/Profilemodalcontext";
@@ -38,6 +38,7 @@ export default function ChatWindow({ contact, onBack }) {
     lastSeen: contact?.lastSeen,
   });
   const [isBlocked, setIsBlocked] = useState(Boolean(contact?.isBlocked));
+  const [deletingChat, setDeletingChat] = useState(false);
   const [sendError, setSendError] = useState("");
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -604,6 +605,60 @@ export default function ChatWindow({ contact, onBack }) {
     }
   };
 
+  const handleDeleteChat = async () => {
+    if (!contact || deletingChat) return;
+    const confirmed = window.confirm(
+      `Delete this chat with ${contact.username}? This can't be undone.`
+    );
+    if (!confirmed) return;
+
+    setDeletingChat(true);
+    try {
+      await deleteChat(contact._id);
+      const contactId = String(contact._id);
+      messageCacheRef.current.set(contactId, { messages: [], hasMore: false });
+      setMessages([]);
+      setHasMoreOlder(false);
+    } catch (err) {
+      console.error("Failed to delete chat:", err);
+    } finally {
+      setDeletingChat(false);
+    }
+  };
+
+  // Star/unstar a message. Updates optimistically (and the per-contact
+  // cache) so the star feels instant instead of waiting on the network.
+  const handleToggleStar = async (messageId, currentlyStarred) => {
+    const applyLocally = (starred) => {
+      setMessages((prev) => {
+        const next = prev.map((m) => {
+          if (m._id !== messageId) return m;
+          const starredBy = m.starredBy || [];
+          const nextStarredBy = starred
+            ? [...starredBy, user._id]
+            : starredBy.filter((id) => String(id) !== String(user._id));
+          return { ...m, starredBy: nextStarredBy };
+        });
+        const contactId = String(contact._id);
+        const prevCached = messageCacheRef.current.get(contactId);
+        messageCacheRef.current.set(contactId, { messages: next, hasMore: prevCached?.hasMore ?? false });
+        return next;
+      });
+    };
+
+    applyLocally(!currentlyStarred);
+    try {
+      if (currentlyStarred) {
+        await unstarMessage(messageId);
+      } else {
+        await starMessage(messageId);
+      }
+    } catch (err) {
+      console.error("Failed to toggle star:", err);
+      applyLocally(currentlyStarred); // roll back on failure
+    }
+  };
+
   if (!contact) {
     return (
       <div className="chat-window empty">
@@ -690,8 +745,10 @@ export default function ChatWindow({ contact, onBack }) {
       <MessageBubble
         message={m}
         isOwn={String(m.sender) === String(user._id)}
+        isStarred={(m.starredBy || []).some((id) => String(id) === String(user._id))}
         onOpenMedia={setViewerMedia}
         onMediaLoad={handleMediaLoad}
+        onToggleStar={handleToggleStar}
       />
     </React.Fragment>
   );
@@ -733,11 +790,29 @@ export default function ChatWindow({ contact, onBack }) {
       )}
 
       {isBlocked ? (
-        <div className="blocked-banner">
-          <span>You blocked {contact.username}. Unblock to send messages.</span>
-          <button type="button" className="profile-btn-secondary" onClick={handleUnblockFromChat}>
-            Unblock
+        <div className="blocked-state">
+          <button type="button" className="blocked-pill" onClick={handleUnblockFromChat}>
+            You blocked {contact.username}. Tap to unblock.
           </button>
+          <div className="blocked-actions">
+            <button type="button" className="blocked-action blocked-action-delete" onClick={handleDeleteChat} disabled={deletingChat}>
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="3 6 5 6 21 6" />
+                <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" />
+                <path d="M10 11v6" />
+                <path d="M14 11v6" />
+                <path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2" />
+              </svg>
+              <span>{deletingChat ? "Deleting..." : "Delete chat"}</span>
+            </button>
+            <button type="button" className="blocked-action blocked-action-unblock" onClick={handleUnblockFromChat}>
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="9" />
+                <line x1="5.5" y1="18.5" x2="18.5" y2="5.5" />
+              </svg>
+              <span>Unblock</span>
+            </button>
+          </div>
         </div>
       ) : (
         <>

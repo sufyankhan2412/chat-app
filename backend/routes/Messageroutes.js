@@ -74,4 +74,91 @@ router.get("/:userId", protect, async (req, res) => {
   }
 });
 
+// @route  GET /api/messages/:userId/media
+// All image/video/file attachments shared with this contact (either
+// direction), newest first — powers the "Media, links and docs" screen.
+router.get("/:userId/media", protect, async (req, res) => {
+  try {
+    const otherUserId = req.params.userId;
+    const myId = req.user._id;
+    const limit = Math.min(parseInt(req.query.limit, 10) || 60, 200);
+
+    const media = await Message.find({
+      type: { $in: ["image", "video", "file"] },
+      $or: [
+        { sender: myId, receiver: otherUserId },
+        { sender: otherUserId, receiver: myId },
+      ],
+    })
+      .sort({ createdAt: -1 })
+      .limit(limit);
+
+    res.json({ media });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// @route  GET /api/messages/:userId/starred
+// Messages I've starred within this specific conversation, newest first.
+// Starring is private per-user, so this only ever looks at my own stars.
+router.get("/:userId/starred", protect, async (req, res) => {
+  try {
+    const otherUserId = req.params.userId;
+    const myId = req.user._id;
+
+    const starred = await Message.find({
+      starredBy: myId,
+      $or: [
+        { sender: myId, receiver: otherUserId },
+        { sender: otherUserId, receiver: myId },
+      ],
+    }).sort({ createdAt: -1 });
+
+    res.json({ messages: starred });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// @route  POST /api/messages/:id/star
+router.post("/:id/star", protect, async (req, res) => {
+  try {
+    const message = await Message.findOne({
+      _id: req.params.id,
+      $or: [{ sender: req.user._id }, { receiver: req.user._id }],
+    });
+    if (!message) return res.status(404).json({ message: "Message not found" });
+
+    await Message.updateOne(
+      { _id: message._id },
+      { $addToSet: { starredBy: req.user._id } }
+    );
+
+    res.json({ starred: true });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// @route  POST /api/messages/:id/unstar
+router.post("/:id/unstar", protect, async (req, res) => {
+  try {
+    const message = await Message.findOne({
+      _id: req.params.id,
+      $or: [{ sender: req.user._id }, { receiver: req.user._id }],
+    });
+    if (!message) return res.status(404).json({ message: "Message not found" });
+
+    await Message.updateOne(
+      { _id: message._id },
+      { $pull: { starredBy: req.user._id } }
+    );
+
+    res.json({ starred: false });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
 module.exports = router;

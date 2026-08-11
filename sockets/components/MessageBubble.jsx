@@ -140,7 +140,14 @@ function AttachmentContent({ message, onOpenMedia, onMediaLoad }) {
   return <span className="message-content">{content}</span>;
 }
 
-export default function MessageBubble({ message, isOwn, onOpenMedia, onMediaLoad }) {
+export default function MessageBubble({
+  message,
+  isOwn,
+  isStarred,
+  onOpenMedia,
+  onMediaLoad,
+  onToggleStar,
+}) {
   const isMedia = message.type && message.type !== "text";
 
   return (
@@ -150,8 +157,19 @@ export default function MessageBubble({ message, isOwn, onOpenMedia, onMediaLoad
           isMedia ? `bubble-${message.type}` : ""
         }`}
       >
+        {onToggleStar && (
+          <button
+            type="button"
+            className={`message-star-btn${isStarred ? " starred" : ""}`}
+            onClick={() => onToggleStar(message._id, isStarred)}
+            title={isStarred ? "Unstar message" : "Star message"}
+          >
+            ★
+          </button>
+        )}
         <AttachmentContent message={message} onOpenMedia={onOpenMedia} onMediaLoad={onMediaLoad} />
         <span className="message-meta">
+          {isStarred && <span className="message-star-badge">★</span>}
           <span className="message-time">{formatTime(message.createdAt)}</span>
           {isOwn && <Ticks status={message.status} />}
         </span>

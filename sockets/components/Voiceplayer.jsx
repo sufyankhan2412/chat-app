@@ -12,10 +12,7 @@ export default function VoicePlayer({ src, duration }) {
   const [currentTime, setCurrentTime] = useState(0);
   const [knownDuration, setKnownDuration] = useState(duration || 0);
 
-  // The native "timeupdate" event only fires a few times a second, which is
-  // why the fill used to visibly step instead of gliding. Driving it from
-  // requestAnimationFrame instead updates on every paint (~60fps), matching
-  // WhatsApp's smooth motion.
+
   const tick = () => {
     const audio = audioRef.current;
     if (!audio) return;

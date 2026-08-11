@@ -1,6 +1,7 @@
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
 const Message = require("../models/Message");
+const Contact = require("../models/Contact");
 
 // In-memory map of userId -> Set<socketId> for currently connected users
 const onlineUsers = new Map();
@@ -144,6 +145,14 @@ try {
         const receiverSocketIds = getReceiverSocketIds(receiverId);
         const status = receiverSocketIds.length ? "delivered" : "sent";
 
+        // If this chat has disappearing messages turned on, stamp an
+        // expiry so MongoDB's TTL index cleans it up automatically.
+        const contactSetting = await Contact.findOne({
+          user: userId,
+          contact: receiverId,
+        }).select("disappearingDuration");
+        const disappearingDuration = contactSetting?.disappearingDuration || 0;
+
         const message = await Message.create({
           sender: userId,
           receiver: receiverId,
@@ -151,6 +160,9 @@ try {
           content: content ? content.trim() : "",
           ...(isTextMessage ? {} : { attachment }),
           status,
+          ...(disappearingDuration
+            ? { expiresAt: new Date(Date.now() + disappearingDuration) }
+            : {}),
         });
 
         const receiverRoom = getUserRoomName(receiverId);

@@ -15,6 +15,15 @@ const contactSchema = new mongoose.Schema(
       ref: "User",
       required: true,
     },
+
+    // "Disappearing messages" duration for this chat, in milliseconds.
+    // 0 means off. Like WhatsApp, this is a shared per-chat setting — set
+    // on both directions' documents together so either side sees the same
+    // value (see PUT /api/users/contacts/:id/disappearing).
+    disappearingDuration: {
+      type: Number,
+      default: 0,
+    },
   },
   { timestamps: true }
 );
