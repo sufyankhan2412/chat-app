@@ -29,6 +29,10 @@ function detectAttachmentType(file) {
   return "file";
 }
 
+// Sentinel used to detect "first render" in the contact-switch reset below —
+// it can never equal a real contact id (string) or `null`.
+const UNINITIALIZED_CONTACT_ID = Symbol("uninitialized-contact-id");
+
 export default function ChatWindow({ contact, onBack }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
@@ -84,25 +88,51 @@ export default function ChatWindow({ contact, onBack }) {
   const discardRecordingRef = useRef(false);
   const recordingStartRef = useRef(null);
   const isStartingRecordingRef = useRef(false); // guards against a double-click starting two recordings
+  const prevContactIdRef = useRef(null); // last contact we auto-scrolled for, so we only force-jump on an actual chat switch
+
+  // Sentinel that can never equal a real contact id (or null), so the
+  // render-phase reset below always runs on the very first render too.
+  const [renderedContactId, setRenderedContactId] = useState(UNINITIALIZED_CONTACT_ID);
+
+  // Swap in the new contact's messages (and related per-conversation UI
+  // state) synchronously during render, the instant the `contact` prop
+  // changes. Doing this in a `useEffect` instead — as this used to — lets
+  // React commit and PAINT one frame of the *previous* chat's messages
+  // (and scroll position) under the *new* contact's header before the
+  // effect gets a chance to run, which is exactly the visible "jerk" when
+  // opening a chat: old content flashes, then swaps, then jump-scrolls.
+  // Adjusting state directly in the render body (React's documented
+  // pattern for "resetting state when a prop changes") replaces the
+  // in-progress render before anything reaches the screen, so the swap is
+  // already done by the first (and only) paint.
+  const nextContactId = contact?._id ?? null;
+  if (nextContactId !== renderedContactId) {
+    setRenderedContactId(nextContactId);
+    if (contact) {
+      const cached = messageCacheRef.current.get(String(contact._id));
+      setMessages(cached?.messages || []);
+      setHasMoreOlder(cached?.hasMore ?? false);
+      setLoadingMessages(!cached);
+      setIsOtherTyping(false);
+      setContactStatus({ isOnline: contact.isOnline, lastSeen: contact.lastSeen });
+      setIsBlocked(Boolean(contact.isBlocked));
+    } else {
+      setMessages([]);
+      setHasMoreOlder(false);
+      setLoadingMessages(false);
+    }
+    setSendError("");
+    // Never show the scrollbar just because we switched chats
+    setShowScrollbar(false);
+  }
 
   useEffect(() => {
     if (!contact) return;
-
     const contactId = String(contact._id);
-    setIsOtherTyping(false);
-    setContactStatus({ isOnline: contact.isOnline, lastSeen: contact.lastSeen });
-    setIsBlocked(Boolean(contact.isBlocked));
-    setSendError("");
 
-    const cached = messageCacheRef.current.get(contactId);
-    setMessages(cached?.messages || []);
-    setHasMoreOlder(cached?.hasMore ?? false);
-    setLoadingMessages(!cached);
-
-    // Never show the scrollbar just because we switched chats
-    setShowScrollbar(false);
     if (scrollbarHideTimeoutRef.current) clearTimeout(scrollbarHideTimeoutRef.current);
 
+    const cached = messageCacheRef.current.get(contactId);
     if (cached) return; // already have the latest page for this contact
 
     let isCurrent = true;
@@ -343,11 +373,25 @@ export default function ChatWindow({ contact, onBack }) {
       return;
     }
     if (!el) return;
-    el.scrollTop = el.scrollHeight;
-    // We just forced the view to the bottom, so mark it "pinned" — any
-    // image/video that loads after this point and grows the container
-    // should keep it snapped to the bottom too (see handleMediaLoad).
-    isPinnedToBottomRef.current = true;
+
+    const contactId = contact?._id ?? null;
+    const contactChanged = prevContactIdRef.current !== contactId;
+    prevContactIdRef.current = contactId;
+
+    // Only force the view down to the newest message when we've just opened
+    // a conversation, or when the person was already sitting at (or near)
+    // the bottom — e.g. a new message just arrived while they were reading
+    // the latest messages. In-place edits to the existing list (starring a
+    // message, read receipts, delivery ticks) update `messages` too, but
+    // must never yank someone back down while they're scrolled up reading
+    // older history.
+    if (contactChanged || isPinnedToBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
+      // We just forced the view to the bottom, so mark it "pinned" — any
+      // image/video that loads after this point and grows the container
+      // should keep it snapped to the bottom too (see handleMediaLoad).
+      isPinnedToBottomRef.current = true;
+    }
   }, [contact, messages, isOtherTyping]);
 
   // Whether the user is currently sitting at (or very near) the bottom of

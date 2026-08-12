@@ -513,6 +513,15 @@ body {
   /* Hidden by default (WhatsApp-style) - shown only while actively scrolling */
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
+
+  /* The browser's native scroll-anchoring tries to "helpfully" keep whatever
+     element is nearest the top of the viewport in place whenever content
+     above it resizes. Chat images/videos finish loading (and grow) well
+     after the initial paint, so the browser was fighting our own
+     scroll-position logic and yanking the view up to whichever image
+     happened to load first. We manage scroll position ourselves (see
+     ChatWindow's handleMediaLoad / isPinnedToBottomRef), so switch this off.*/
+  overflow-anchor: none;
 }
 
 .messages-container::-webkit-scrollbar {
@@ -1215,38 +1224,80 @@ body {
 .voice-player {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   min-width: 200px;
   padding: 2px 0;
 }
 
 .voice-play-btn {
-  width: 34px;
-  height: 34px;
+  position: relative;
+  width: 36px;
+  height: 36px;
   border-radius: 50%;
   border: none;
-  background: #128c7e;
+  background: linear-gradient(155deg, #1fa896 0%, #128c7e 60%, #0e7266 100%);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18), 0 2px 6px rgba(18, 140, 126, 0.28);
   color: #fff;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
   flex-shrink: 0;
-  transition: background 0.15s ease, transform 0.1s ease;
+  transition: background 0.15s ease, transform 0.12s ease, box-shadow 0.15s ease;
+}
+
+/* Play icon sits visually off-center in a triangle, so nudge it right */
+.voice-play-btn svg {
+  position: relative;
+  left: 1px;
+}
+
+.voice-player.is-playing .voice-play-btn svg {
+  left: 0;
 }
 
 .voice-play-btn:hover {
-  background: #0f7568;
+  background: linear-gradient(155deg, #24b7a3 0%, #14988a 60%, #0f7d70 100%);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2), 0 3px 9px rgba(18, 140, 126, 0.35);
 }
 
 .voice-play-btn:active {
-  transform: scale(0.94);
+  transform: scale(0.92);
+}
+
+/* Soft pulsing ring while a voice note is playing, for a subtle "live" cue */
+.voice-play-btn-ring {
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(18, 140, 126, 0.45);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.voice-player.is-playing .voice-play-btn-ring {
+  animation: voice-ring-pulse 1.8s ease-out infinite;
+}
+
+@keyframes voice-ring-pulse {
+  0% {
+    opacity: 0.55;
+    transform: scale(0.9);
+  }
+  70% {
+    opacity: 0;
+    transform: scale(1.18);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.18);
+  }
 }
 
 .voice-track {
   flex: 1;
   height: 4px;
-  background: rgba(0, 0, 0, 0.15);
+  background: rgba(0, 0, 0, 0.12);
   border-radius: 2px;
   cursor: pointer;
   position: relative;
@@ -1257,9 +1308,32 @@ body {
   left: 0;
   top: 0;
   bottom: 0;
-  background: #128c7e;
+  background: linear-gradient(90deg, #17a394, #128c7e);
   border-radius: 2px;
   will-change: width;
+}
+
+/* A small draggable-looking thumb at the current playback position, like a
+   proper media scrubber instead of a bare progress bar */
+.voice-track-thumb {
+  position: absolute;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #128c7e;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px rgba(18, 140, 126, 0.3), 0 1px 2px rgba(0, 0, 0, 0.25);
+  transform: translate(-50%, -50%) scale(0);
+  opacity: 0;
+  transition: transform 0.12s ease, opacity 0.12s ease;
+  pointer-events: none;
+}
+
+.voice-track:hover .voice-track-thumb,
+.voice-player.is-playing .voice-track-thumb {
+  transform: translate(-50%, -50%) scale(1);
+  opacity: 1;
 }
 
 .voice-duration {
@@ -1267,6 +1341,7 @@ body {
   color: #667781;
   font-variant-numeric: tabular-nums;
   flex-shrink: 0;
+  min-width: 32px;
 }
 
 /* ---------- Fullscreen media viewer (images/videos open in-place, not a new tab) ---------- */

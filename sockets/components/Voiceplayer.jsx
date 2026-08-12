@@ -89,7 +89,7 @@ export default function VoicePlayer({ src, duration }) {
   const progressPct = knownDuration ? Math.min(100, (currentTime / knownDuration) * 100) : 0;
 
   return (
-    <div className="voice-player">
+    <div className={`voice-player${isPlaying ? " is-playing" : ""}`}>
       <audio ref={audioRef} src={src} preload="metadata" />
       <button
         type="button"
@@ -97,19 +97,21 @@ export default function VoicePlayer({ src, duration }) {
         onClick={togglePlay}
         aria-label={isPlaying ? "Pause voice message" : "Play voice message"}
       >
+        <span className="voice-play-btn-ring" aria-hidden="true" />
         {isPlaying ? (
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
-            <rect x="6" y="5" width="4" height="14" rx="1" />
-            <rect x="14" y="5" width="4" height="14" rx="1" />
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor">
+            <rect x="6.5" y="5" width="4" height="14" rx="1.5" />
+            <rect x="13.5" y="5" width="4" height="14" rx="1.5" />
           </svg>
         ) : (
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
-            <path d="M8 5v14l11-7z" />
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor">
+            <path d="M7.5 4.5v15c0 .8.87 1.3 1.56.9l12-7.5a1 1 0 0 0 0-1.7l-12-7.5A1.02 1.02 0 0 0 7.5 4.5z" />
           </svg>
         )}
       </button>
       <div className="voice-track" onClick={handleSeek}>
         <div className="voice-track-fill" style={{ width: `${progressPct}%` }} />
+        <div className="voice-track-thumb" style={{ left: `${progressPct}%` }} />
       </div>
       <span className="voice-duration">
         {formatDuration(isPlaying || currentTime > 0 ? currentTime : knownDuration)}
