@@ -52,20 +52,15 @@ export default function MediaGallery({ userId }) {
     links: links.length,
     docs: fileItems.length,
   };
-  const isEmptyOverall = media.length === 0 && links.length === 0;
+  const isEmptyOverall = !loading && media.length === 0 && links.length === 0;
 
-  if (loading) {
-    return (
-      <div className="messages-loading">
-        <div className="spinner" />
-      </div>
-    );
-  }
-
-  if (isEmptyOverall) {
-    return <div className="empty-state">No media, links or docs shared yet</div>;
-  }
-
+  // The tab bar (and its fixed, equal-thirds width) always renders, even
+  // while loading or when there's nothing to show at all. Only the content
+  // *under* the tabs swaps between a spinner / empty message / real list.
+  // Previously the loading and "nothing yet" states returned early with no
+  // shell at all, so this panel briefly collapsed down to a tiny spinner's
+  // width before popping back out to full size once data arrived — that's
+  // what produced the shrink-then-small-tabs jump on open.
   return (
     <div className="media-gallery-shell">
       <div className="media-gallery-tabs" role="tablist">
@@ -77,6 +72,7 @@ export default function MediaGallery({ userId }) {
             aria-selected={activeTab === tab.key}
             className={`media-gallery-tab${activeTab === tab.key ? " active" : ""}`}
             onClick={() => setActiveTab(tab.key)}
+            disabled={loading}
           >
             {tab.label}
             {counts[tab.key] > 0 && (
@@ -87,7 +83,19 @@ export default function MediaGallery({ userId }) {
       </div>
 
       <div className="media-gallery-body">
-        {activeTab === "media" &&
+        {loading && (
+          <div className="media-gallery-loading">
+            <div className="spinner" />
+          </div>
+        )}
+
+        {!loading && isEmptyOverall && (
+          <div className="empty-state media-gallery-empty-tab">
+            No media, links or docs shared yet
+          </div>
+        )}
+
+        {!loading && !isEmptyOverall && activeTab === "media" &&
           (visualItems.length > 0 ? (
             <div className="media-gallery-grid">
               {visualItems.map((m) => {
@@ -121,7 +129,7 @@ export default function MediaGallery({ userId }) {
             <div className="empty-state media-gallery-empty-tab">No media shared yet</div>
           ))}
 
-        {activeTab === "links" &&
+        {!loading && !isEmptyOverall && activeTab === "links" &&
           (links.length > 0 ? (
             <div className="media-gallery-links">
               {links.map((l) => (
@@ -148,7 +156,7 @@ export default function MediaGallery({ userId }) {
             <div className="empty-state media-gallery-empty-tab">No links shared yet</div>
           ))}
 
-        {activeTab === "docs" &&
+        {!loading && !isEmptyOverall && activeTab === "docs" &&
           (fileItems.length > 0 ? (
             <div className="media-gallery-docs">
               {fileItems.map((m) => {

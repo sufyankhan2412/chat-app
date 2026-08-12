@@ -66,7 +66,14 @@ export default function ProfileModal() {
   const scrollRef = useRef(null);
   const scrollbarHideTimeoutRef = useRef(null);
 
-  // Reset local edit state whenever a (possibly different) profile is opened
+  // Reset local edit state whenever a (possibly different) profile is
+  // opened. Keyed on just the id — not the whole profileUser object — so
+  // that in-place status patches (block, mute, online/offline,
+  // disappearing messages all replace profileUser with a new object
+  // reference via updateProfileStatus) don't re-trigger this reset while
+  // you're already looking at that same profile. That mismatch was what
+  // caused the visible jerk on Block/Mute: clicking either one patched
+  // profileUser, which reset view/editing/scroll state right under you.
   useEffect(() => {
     if (profileUser) {
       setUsername(profileUser.username || "");
@@ -76,7 +83,8 @@ export default function ProfileModal() {
       setAvatarPreview(null);
       setView(VIEWS.MAIN);
     }
-  }, [profileUser]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profileUser?._id]);
 
   // Fetch a small media preview for the "Media, links and docs" row.
   useEffect(() => {

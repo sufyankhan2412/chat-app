@@ -189,7 +189,7 @@ body {
 }
 
 .sidebar {
-  width: 320px;
+  width: 260px;
   background: #fff;
   border-right: 1px solid #ddd;
   display: flex;
@@ -1362,8 +1362,10 @@ body {
 }
 
 .profile-modal {
+  box-sizing: border-box;
   width: min(32%, 420px);
   min-width: 320px;
+  height: min(620px, 90vh);      /* was: no fixed height, only max-height */
   max-height: min(90vh, 90dvh);
   background: #fff;
   border-radius: 16px;
@@ -1372,6 +1374,23 @@ body {
   flex-direction: column;
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28), 0 2px 8px rgba(0, 0, 0, 0.08);
   border: 1px solid rgba(0, 0, 0, 0.06);
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Every button inside the modal (Back, Block, Mute, the media tabs,
+   disappearing-message options, etc.) is otherwise an unstyled native
+   <button> — clicking one makes the browser draw its default focus
+   outline instantly, which reads as a sudden "jerk" around the row. Mouse
+   clicks get no ring at all (handled via :focus-visible below); keyboard
+   navigation still gets a clean, non-layout-shifting ring so a11y isn't
+   lost. */
+.profile-modal button {
+  outline: none;
+}
+
+.profile-modal button:focus-visible {
+  outline: 2px solid rgba(18, 140, 126, 0.55);
+  outline-offset: 2px;
 }
 
 .profile-modal-header {
@@ -1628,7 +1647,7 @@ button.profile-row-button {
   align-items: center;
   color: #111b21;
   font-size: 15px;
-  transition: background 0.1s ease;
+  transition: background 0.1s ease, opacity 0.15s ease;
 }
 
 button.profile-row-button:hover {
@@ -1653,6 +1672,7 @@ button.profile-row-danger:disabled {
   opacity: 0.6;
   cursor: not-allowed;
   background: transparent;
+  transition: opacity 0.15s ease;
 }
 
 .profile-edit-actions {
@@ -1763,6 +1783,7 @@ button.profile-row-danger:disabled {
 .profile-toggle:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+  transition: background 0.15s ease, opacity 0.15s ease;
 }
 
 .profile-toggle-knob {
@@ -1800,8 +1821,8 @@ button.profile-row-danger:disabled {
    is "auto", so a tab with more content (e.g. a 3-digit count) can end up
    wider than its neighbors. A hard percentage width sidesteps that. */
 .media-gallery-tab {
-  width: 33.3334%;
-  flex: 0 0 33.3334%;
+  width: 33.3333%;
+  flex: 0 0 33.3333%;
   box-sizing: border-box;
   display: flex;
   align-items: center;
@@ -1824,6 +1845,15 @@ button.profile-row-danger:disabled {
 
 .media-gallery-tab:hover {
   background: rgba(0, 0, 0, 0.03);
+}
+
+.media-gallery-tab:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.media-gallery-tab:disabled:hover {
+  background: none;
 }
 
 .media-gallery-tab::after {
@@ -1857,11 +1887,30 @@ button.profile-row-danger:disabled {
 .media-gallery-body {
   padding: 4px 0 16px;
   width: 100%;
+  min-height: 380px;
+  max-height: 380px;
+  overflow-y: auto;
   animation: profile-view-fade 0.14s ease;
 }
 
+.media-gallery-loading,
+.media-gallery-empty-tab {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
 .media-gallery-empty-tab {
   padding: 40px 24px;
+}
+
+.media-gallery-loading {
+  width: 100%;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 24px;
 }
 
 .media-gallery-grid {
@@ -2220,6 +2269,7 @@ button.profile-row-danger:disabled {
 
   .profile-modal {
     width: 100%;
+    height: min(620px, 92vh);   /* added */
     max-height: 92vh;
     border-radius: 16px 16px 0 0;
     animation: slideUp 0.2s ease;
