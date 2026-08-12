@@ -1,5 +1,5 @@
 ﻿import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { getMessages, uploadAttachment, blockUser, unblockUser, deleteChat, starMessage, unstarMessage } from "../api";
+import { getMessages, uploadAttachment, blockUser, unblockUser, clearChat, deleteMessage, starMessage, unstarMessage } from "../api";
 import { useSocket } from "../context/Socketcontext";
 import { useAuth } from "../context/Authcontext";
 import { useProfileModal } from "../context/Profilemodalcontext";
@@ -44,6 +44,12 @@ export default function ChatWindow({ contact, onBack }) {
   const [isBlocked, setIsBlocked] = useState(Boolean(contact?.isBlocked));
   const [deletingChat, setDeletingChat] = useState(false);
   const [sendError, setSendError] = useState("");
+
+  // ---- Delete-message action sheet (opened on double-click of a bubble) ----
+  const [messageToDelete, setMessageToDelete] = useState(null); // the message object, or null when closed
+  const [deleteMessageBusy, setDeleteMessageBusy] = useState(false);
+  const [deleteMessageError, setDeleteMessageError] = useState("");
+
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [hasMoreOlder, setHasMoreOlder] = useState(false);
@@ -54,7 +60,7 @@ export default function ChatWindow({ contact, onBack }) {
   const [pendingFile, setPendingFile] = useState(null); // { file, type, previewUrl }
   const [isUploading, setIsUploading] = useState(false);
 
-  // ---- Chat header "⋮" menu (Block user) ----
+  // ---- Chat header "⋮" menu (Clear chat, Block user) ----
   const [isHeaderMenuOpen, setIsHeaderMenuOpen] = useState(false);
   const [headerMenuBusy, setHeaderMenuBusy] = useState(false);
 
@@ -327,6 +333,32 @@ export default function ChatWindow({ contact, onBack }) {
       setSendError(message || "Message could not be sent");
     };
 
+    // A message was deleted — either by me (on another tab/device) via
+    // "delete for me", or by either side via "delete for everyone". Either
+    // way, reflect it in this chat's message list immediately.
+    const handleMessageDeleted = ({ messageId, forEveryone }) => {
+      setMessages((prev) => {
+        const next = forEveryone
+          ? prev.map((m) =>
+              String(m._id) === String(messageId)
+                ? { ...m, deletedForEveryone: true, content: "", attachment: undefined }
+                : m
+            )
+          : prev.filter((m) => String(m._id) !== String(messageId));
+        const prevCached = messageCacheRef.current.get(contactId);
+        messageCacheRef.current.set(contactId, { messages: next, hasMore: prevCached?.hasMore ?? false });
+        return next;
+      });
+    };
+
+    // I cleared this chat from another tab/device — mirror it here too.
+    const handleChatCleared = ({ withUserId }) => {
+      if (String(withUserId) !== contactId) return;
+      messageCacheRef.current.set(contactId, { messages: [], hasMore: false });
+      setMessages([]);
+      setHasMoreOlder(false);
+    };
+
     socket.on("receiveMessage", handleReceiveMessage);
     socket.on("messageSent", handleMessageSent);
     socket.on("messagesDelivered", handleMessagesDelivered);
@@ -338,6 +370,8 @@ export default function ChatWindow({ contact, onBack }) {
     socket.on("contactBlocked", handleContactBlocked);
     socket.on("contactUnblocked", handleContactUnblocked);
     socket.on("errorMessage", handleErrorMessage);
+    socket.on("messageDeleted", handleMessageDeleted);
+    socket.on("chatCleared", handleChatCleared);
 
     return () => {
       socket.off("receiveMessage", handleReceiveMessage);
@@ -351,6 +385,8 @@ export default function ChatWindow({ contact, onBack }) {
       socket.off("contactBlocked", handleContactBlocked);
       socket.off("contactUnblocked", handleContactUnblocked);
       socket.off("errorMessage", handleErrorMessage);
+      socket.off("messageDeleted", handleMessageDeleted);
+      socket.off("chatCleared", handleChatCleared);
     };
   }, [socket, contact, user]);
 
@@ -699,24 +735,76 @@ export default function ChatWindow({ contact, onBack }) {
     }
   };
 
-  const handleDeleteChat = async () => {
+  // "Clear chat" — WhatsApp-style: wipes the message history on my side
+  // only. The contact keeps their own copy and is never notified.
+  const handleClearChat = async () => {
     if (!contact || deletingChat) return;
     const confirmed = window.confirm(
-      `Delete this chat with ${contact.username}? This can't be undone.`
+      `Clear this chat with ${contact.username}? Messages will be removed from your side only and this can't be undone.`
     );
     if (!confirmed) return;
 
     setDeletingChat(true);
     try {
-      await deleteChat(contact._id);
+      await clearChat(contact._id);
       const contactId = String(contact._id);
       messageCacheRef.current.set(contactId, { messages: [], hasMore: false });
       setMessages([]);
       setHasMoreOlder(false);
+      setIsHeaderMenuOpen(false);
     } catch (err) {
-      console.error("Failed to delete chat:", err);
+      console.error("Failed to clear chat:", err);
     } finally {
       setDeletingChat(false);
+    }
+  };
+
+  // ---------------------------------------------------------------------
+  // Delete message (double-click a bubble to open the action sheet)
+  // ---------------------------------------------------------------------
+
+  const openDeleteSheetForMessage = (message) => {
+    if (message.deletedForEveryone) return; // nothing left to delete
+    setDeleteMessageError("");
+    setMessageToDelete(message);
+  };
+
+  const closeDeleteSheet = () => {
+    if (deleteMessageBusy) return;
+    setMessageToDelete(null);
+    setDeleteMessageError("");
+  };
+
+  const confirmDeleteMessage = async (forEveryone) => {
+    if (!messageToDelete || deleteMessageBusy) return;
+    const targetId = messageToDelete._id;
+
+    setDeleteMessageBusy(true);
+    setDeleteMessageError("");
+    try {
+      await deleteMessage(targetId, forEveryone);
+
+      setMessages((prev) => {
+        const next = forEveryone
+          ? prev.map((m) =>
+              String(m._id) === String(targetId)
+                ? { ...m, deletedForEveryone: true, content: "", attachment: undefined }
+                : m
+            )
+          : prev.filter((m) => String(m._id) !== String(targetId));
+        const contactId = String(contact._id);
+        const prevCached = messageCacheRef.current.get(contactId);
+        messageCacheRef.current.set(contactId, { messages: next, hasMore: prevCached?.hasMore ?? false });
+        return next;
+      });
+
+      setMessageToDelete(null);
+    } catch (err) {
+      setDeleteMessageError(
+        err?.response?.data?.message || "Failed to delete message. Please try again."
+      );
+    } finally {
+      setDeleteMessageBusy(false);
     }
   };
 
@@ -823,6 +911,15 @@ export default function ChatWindow({ contact, onBack }) {
             <div className="chat-header-menu" onClick={(e) => e.stopPropagation()}>
               <button
                 type="button"
+                className="chat-header-menu-item"
+                onClick={handleClearChat}
+                disabled={deletingChat}
+              >
+                <span className="chat-header-menu-item-icon" aria-hidden="true">🧹</span>
+                <span>{deletingChat ? "Clearing..." : "Clear chat"}</span>
+              </button>
+              <button
+                type="button"
                 className="chat-header-menu-item chat-header-menu-item-danger"
                 onClick={handleToggleBlockFromMenu}
                 disabled={headerMenuBusy}
@@ -881,6 +978,7 @@ export default function ChatWindow({ contact, onBack }) {
         onOpenMedia={setViewerMedia}
         onMediaLoad={handleMediaLoad}
         onToggleStar={handleToggleStar}
+        onDoubleClick={openDeleteSheetForMessage}
       />
     </React.Fragment>
   );
@@ -927,7 +1025,7 @@ export default function ChatWindow({ contact, onBack }) {
             You blocked {contact.username}. Tap to unblock.
           </button>
           <div className="blocked-actions">
-            <button type="button" className="blocked-action blocked-action-delete" onClick={handleDeleteChat} disabled={deletingChat}>
+            <button type="button" className="blocked-action blocked-action-delete" onClick={handleClearChat} disabled={deletingChat}>
               <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <polyline points="3 6 5 6 21 6" />
                 <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" />
@@ -935,7 +1033,7 @@ export default function ChatWindow({ contact, onBack }) {
                 <path d="M14 11v6" />
                 <path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2" />
               </svg>
-              <span>{deletingChat ? "Deleting..." : "Delete chat"}</span>
+              <span>{deletingChat ? "Clearing..." : "Clear chat"}</span>
             </button>
             <button type="button" className="blocked-action blocked-action-unblock" onClick={handleUnblockFromChat}>
               <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1035,6 +1133,43 @@ export default function ChatWindow({ contact, onBack }) {
       )}
 
       <MediaViewer media={viewerMedia} onClose={() => setViewerMedia(null)} />
+
+      {messageToDelete && (
+        <div className="delete-message-sheet-backdrop" onClick={closeDeleteSheet}>
+          <div className="delete-message-sheet" onClick={(e) => e.stopPropagation()}>
+            <div className="delete-message-sheet-title">Delete message?</div>
+            {deleteMessageError && (
+              <div className="delete-message-sheet-error">{deleteMessageError}</div>
+            )}
+            <button
+              type="button"
+              className="delete-message-sheet-option"
+              onClick={() => confirmDeleteMessage(false)}
+              disabled={deleteMessageBusy}
+            >
+              Delete for me
+            </button>
+            {String(messageToDelete.sender) === String(user._id) && (
+              <button
+                type="button"
+                className="delete-message-sheet-option delete-message-sheet-option-danger"
+                onClick={() => confirmDeleteMessage(true)}
+                disabled={deleteMessageBusy}
+              >
+                Delete for everyone
+              </button>
+            )}
+            <button
+              type="button"
+              className="delete-message-sheet-option delete-message-sheet-cancel"
+              onClick={closeDeleteSheet}
+              disabled={deleteMessageBusy}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

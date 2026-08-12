@@ -45,8 +45,16 @@ export const getContacts = () =>
 export const getMessages = (userId, params = {}) =>
   api.get(`/messages/${userId}`, { params });
 
-// Deletes the full message history with this contact (both sides).
-export const deleteChat = (userId) => api.delete(`/messages/${userId}`);
+// Clears the message history with this contact on MY side only —
+// WhatsApp-style "Clear chat". The other participant's copy is untouched.
+export const clearChat = (userId) => api.delete(`/messages/clear/${userId}`);
+
+// Deletes a single message. `forEveryone: false` (default) removes it from
+// only my own view. `forEveryone: true` is sender-only, time-limited, and
+// replaces the message with a "This message was deleted" placeholder for
+// both participants.
+export const deleteMessage = (messageId, forEveryone = false) =>
+  api.delete(`/messages/message/${messageId}`, { data: { forEveryone } });
 
 // Uploads one chat attachment (image/video/voice/file) and returns
 // { attachment: { url, fileName, fileSize, mimeType, duration? } }.

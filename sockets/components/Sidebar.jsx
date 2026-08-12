@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from "react";
-import { getContacts } from "../api";
+import React, { useEffect, useRef, useState } from "react";
+import { getContacts, getMessages } from "../api";
 import { useSocket } from "../context/Socketcontext";
 import { useAuth } from "../context/Authcontext";
 import { useProfileModal } from "../context/Profilemodalcontext";
@@ -27,6 +27,9 @@ function formatPreviewTime(dateStr) {
 // WhatsApp-style fallback label ("📷 Photo") instead of showing a blank line.
 function previewText(lastMessage) {
   if (!lastMessage) return null;
+  // "Delete for everyone" leaves visible evidence — WhatsApp-style italic
+  // placeholder — everywhere the message used to show, sidebar included.
+  if (lastMessage.deletedForEveryone) return "This message was deleted";
   if (lastMessage.content) return lastMessage.content;
 
   switch (lastMessage.type) {
@@ -56,6 +59,15 @@ export default function Sidebar({ activeContact, onSelectContact }) {
   const socket = useSocket();
   const { user, logout } = useAuth();
   const { openOwnProfile } = useProfileModal();
+
+  // Lets the async "delete for me" handler below check the *current*
+  // contacts list without re-subscribing the socket effect on every
+  // contacts change (which would also fight with useEffect's stale closure
+  // if we read `contacts` directly inside an async callback).
+  const contactsRef = useRef(contacts);
+  useEffect(() => {
+    contactsRef.current = contacts;
+  }, [contacts]);
 
 useEffect(() => {
   if (!user) return;
@@ -187,11 +199,68 @@ useEffect(() => {
     socket.on("messagesDelivered", handleMessagesDelivered);
     socket.on("messagesRead", handleMessagesRead);
 
+    // "Delete for everyone": if the deleted message was the preview shown
+    // for this contact, replace it with the same "This message was
+    // deleted" placeholder used in the chat window — visible to both
+    // sides, since the message itself is still gone for both.
+    //
+    // "Delete for me": leaves NO trace at all, and only ever affects my
+    // own view. If the deleted message was the one currently shown as
+    // this contact's preview, fetch whatever the newest remaining
+    // (non-deleted-for-me) message now is and swap it in — or clear the
+    // preview entirely if there's nothing left.
+    const handleMessageDeleted = async ({ messageId, forEveryone, withUserId }) => {
+      if (!withUserId) return;
+
+      if (forEveryone) {
+        setContacts((prev) =>
+          prev.map((c) =>
+            c.lastMessage && String(c.lastMessage._id) === String(messageId)
+              ? { ...c, lastMessage: { ...c.lastMessage, deletedForEveryone: true, content: "" } }
+              : c
+          )
+        );
+        return;
+      }
+
+      const current = contactsRef.current.find((c) => String(c._id) === String(withUserId));
+      if (!current?.lastMessage || String(current.lastMessage._id) !== String(messageId)) {
+        return; // deleted message wasn't the preview — nothing to update
+      }
+
+      try {
+        const res = await getMessages(withUserId, { limit: 1 });
+        const latest = res.data.messages[res.data.messages.length - 1] || null;
+        setContacts((prev) =>
+          prev.map((c) =>
+            String(c._id) === String(withUserId)
+              ? { ...c, lastMessage: latest ? toPreview(latest) : null }
+              : c
+          )
+        );
+      } catch (err) {
+        console.error("Failed to refresh preview after delete:", err);
+      }
+    };
+
+    // "Clear chat" — my whole history with this contact is gone on my
+    // side, so drop the preview back to "Say hi 👋" like a brand-new chat.
+    const handleChatCleared = ({ withUserId }) => {
+      setContacts((prev) =>
+        prev.map((c) => (String(c._id) === String(withUserId) ? { ...c, lastMessage: null } : c))
+      );
+    };
+
+    socket.on("messageDeleted", handleMessageDeleted);
+    socket.on("chatCleared", handleChatCleared);
+
     return () => {
       socket.off("receiveMessage", handleReceiveMessage);
       socket.off("messageSent", handleMessageSent);
       socket.off("messagesDelivered", handleMessagesDelivered);
       socket.off("messagesRead", handleMessagesRead);
+      socket.off("messageDeleted", handleMessageDeleted);
+      socket.off("chatCleared", handleChatCleared);
     };
   }, [socket, user]);
 
@@ -276,8 +345,16 @@ useEffect(() => {
                       </span>
                     ) : (
                       <>
-                        {isOwnLastMsg && <PreviewTicks status={lastMsg.status} />}
-                        <span className="contact-last-message-text">
+                        {/* WhatsApp never shows delivery/read ticks next to
+                            a "This message was deleted" preview */}
+                        {isOwnLastMsg && !lastMsg.deletedForEveryone && (
+                          <PreviewTicks status={lastMsg.status} />
+                        )}
+                        <span
+                          className={`contact-last-message-text${
+                            lastMsg?.deletedForEveryone ? " contact-last-message-deleted" : ""
+                          }`}
+                        >
                           {lastMsg ? previewText(lastMsg) : "Say hi 👋"}
                         </span>
                       </>

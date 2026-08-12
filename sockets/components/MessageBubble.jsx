@@ -147,17 +147,20 @@ export default function MessageBubble({
   onOpenMedia,
   onMediaLoad,
   onToggleStar,
+  onDoubleClick,
 }) {
-  const isMedia = message.type && message.type !== "text";
+  const isDeleted = Boolean(message.deletedForEveryone);
+  const isMedia = !isDeleted && message.type && message.type !== "text";
 
   return (
     <div className={`message-row ${isOwn ? "own" : "other"}`}>
       <div
         className={`message-bubble ${isOwn ? "own-bubble" : "other-bubble"} ${
           isMedia ? `bubble-${message.type}` : ""
-        }`}
+        } ${isDeleted ? "bubble-deleted" : ""}`}
+        onDoubleClick={onDoubleClick ? () => onDoubleClick(message) : undefined}
       >
-        {onToggleStar && (
+        {!isDeleted && onToggleStar && (
           <button
             type="button"
             className={`message-star-btn${isStarred ? " starred" : ""}`}
@@ -167,11 +170,22 @@ export default function MessageBubble({
             ★
           </button>
         )}
-        <AttachmentContent message={message} onOpenMedia={onOpenMedia} onMediaLoad={onMediaLoad} />
+        {isDeleted ? (
+          <span className="message-deleted-content">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="10" />
+              <line x1="15" y1="9" x2="9" y2="15" />
+              <line x1="9" y1="9" x2="15" y2="15" />
+            </svg>
+            This message was deleted
+          </span>
+        ) : (
+          <AttachmentContent message={message} onOpenMedia={onOpenMedia} onMediaLoad={onMediaLoad} />
+        )}
         <span className="message-meta">
-          {isStarred && <span className="message-star-badge">★</span>}
+          {isStarred && !isDeleted && <span className="message-star-badge">★</span>}
           <span className="message-time">{formatTime(message.createdAt)}</span>
-          {isOwn && <Ticks status={message.status} />}
+          {isOwn && !isDeleted && <Ticks status={message.status} />}
         </span>
       </div>
     </div>

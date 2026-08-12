@@ -452,6 +452,11 @@ body {
   flex: 1;
 }
 
+.contact-last-message-deleted {
+  font-style: italic;
+  color: #8696a0;
+}
+
 .preview-tick {
   font-size: 13px;
   letter-spacing: -2px;
@@ -2253,6 +2258,102 @@ button.profile-row-danger:disabled {
   color: #f2c94c;
   font-size: 10px;
   margin-right: 2px;
+}
+
+/* ---------- "This message was deleted" bubble ---------- */
+.bubble-deleted {
+  cursor: default;
+}
+
+.message-deleted-content {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-style: italic;
+  color: #8696a0;
+  font-size: 13.5px;
+}
+
+/* ---------- Delete-message action sheet (double-click a bubble) ---------- */
+.delete-message-sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  z-index: 60;
+  animation: attach-menu-pop 0.14s ease-out;
+}
+
+.delete-message-sheet {
+  width: 100%;
+  max-width: 420px;
+  background: #fff;
+  border-radius: 14px 14px 0 0;
+  padding: 8px 0 max(8px, env(safe-area-inset-bottom));
+  box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.25);
+}
+
+.delete-message-sheet-title {
+  padding: 12px 20px 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #8696a0;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.delete-message-sheet-error {
+  margin: 0 16px 8px;
+  padding: 8px 12px;
+  background: #fdecea;
+  color: #c0392b;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.delete-message-sheet-option {
+  display: block;
+  width: 100%;
+  padding: 14px 20px;
+  border: none;
+  background: none;
+  text-align: left;
+  font-size: 15px;
+  font-weight: 500;
+  color: #111b21;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.12s ease;
+}
+
+.delete-message-sheet-option:hover:not(:disabled) {
+  background: #f5f6f6;
+}
+
+.delete-message-sheet-option:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.delete-message-sheet-option-danger {
+  color: #d33232;
+}
+
+.delete-message-sheet-cancel {
+  border-top: 8px solid #f0f2f5;
+  color: #667781;
+}
+
+/* Desktop/tablet: center the sheet instead of anchoring to the bottom */
+@media (min-width: 700px) {
+  .delete-message-sheet-backdrop {
+    align-items: center;
+  }
+  .delete-message-sheet {
+    border-radius: 14px;
+  }
 }
 
 /* ---------- Back button ----------
