@@ -179,7 +179,12 @@ export default function MessageBubble({
             </svg>
             This message was deleted
           </span>
-        ) : (
+        ) :(message.deletedForEveryone || message.pendingDeleteForEveryone) ? (
+  <div className="message-deleted-content">
+    <span>🚫</span>
+    <span>This message was deleted</span>
+  </div>
+) :  (
           <AttachmentContent message={message} onOpenMedia={onOpenMedia} onMediaLoad={onMediaLoad} />
         )}
         <span className="message-meta">

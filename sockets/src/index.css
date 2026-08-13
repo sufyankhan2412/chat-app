@@ -1349,6 +1349,60 @@ body {
   min-width: 32px;
 }
 
+ 
+.voice-avatar-wrapper {
+  position: relative;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+}
+ 
+.voice-avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  object-fit: cover;
+  display: block;
+  background: #dfe5e7;
+}
+ 
+.voice-avatar-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  user-select: none;
+}
+ 
+/* Tiny mic badge overlapping the bottom-right of the avatar, the same way
+   WhatsApp marks a voice-note sender's avatar. Sits on the message bubble
+   background, so give it a ring that matches each bubble color. */
+.voice-avatar-mic-badge {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #128c7e;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 0 0 2px #fff;
+}
+ 
+.own-bubble .voice-avatar-mic-badge {
+  box-shadow: 0 0 0 2px #dcf8c6;
+}
+ 
+.other-bubble .voice-avatar-mic-badge {
+  box-shadow: 0 0 0 2px #fff;
+}
+
 /* ---------- Fullscreen media viewer (images/videos open in-place, not a new tab) ---------- */
 .media-viewer-overlay {
   position: fixed;
@@ -2371,6 +2425,298 @@ button.profile-row-danger:disabled {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+}
+
+
+/* ---------- Undo "delete for everyone" toast ---------- */
+/* ---------- Delete-message sheet (double-click a bubble) ---------- */
+.delete-message-sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(11, 20, 26, 0.45);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  z-index: 60;
+  animation: sheet-fade-in 0.16s ease-out;
+}
+
+@keyframes sheet-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.delete-message-sheet {
+  width: 100%;
+  max-width: 400px;
+  background: #fff;
+  border-radius: 18px 18px 0 0;
+  padding: 20px 20px max(16px, env(safe-area-inset-bottom));
+  box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.22);
+  animation: sheet-rise-in 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes sheet-rise-in {
+  from { transform: translateY(16px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.delete-message-sheet-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.delete-message-sheet-icon {
+  flex-shrink: 0;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: #fdecea;
+  color: #d33232;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.delete-message-sheet-header-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.delete-message-sheet-title {
+  font-size: 15.5px;
+  font-weight: 700;
+  color: #111b21;
+}
+
+.delete-message-sheet-subtitle {
+  font-size: 12.5px;
+  color: #8696a0;
+}
+
+.delete-message-sheet-error {
+  margin: 0 0 12px;
+  padding: 9px 12px;
+  background: #fdecea;
+  color: #c0392b;
+  border-radius: 10px;
+  font-size: 13px;
+}
+
+.delete-message-sheet-options {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #f7f8fa;
+  padding: 4px;
+}
+
+.delete-message-sheet-option {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 12px;
+  border: none;
+  border-radius: 9px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.12s ease;
+}
+
+.delete-message-sheet-option:hover:not(:disabled) {
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.delete-message-sheet-option:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.delete-message-sheet-option-icon {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: #e9edf0;
+  color: #54656f;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.delete-message-sheet-option-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.delete-message-sheet-option-label {
+  font-size: 14.5px;
+  font-weight: 600;
+  color: #111b21;
+}
+
+.delete-message-sheet-option-hint {
+  font-size: 12px;
+  color: #8696a0;
+}
+
+.delete-message-sheet-option-danger .delete-message-sheet-option-icon {
+  background: #fdecea;
+  color: #d33232;
+}
+
+.delete-message-sheet-option-danger .delete-message-sheet-option-label {
+  color: #d33232;
+}
+
+.delete-message-sheet-option-danger:hover:not(:disabled) {
+  background: #fff5f5;
+}
+
+.delete-message-sheet-cancel {
+  width: 100%;
+  margin-top: 10px;
+  padding: 12px;
+  border-radius: 10px;
+  border: 1.5px solid #e4e8ea;
+  background: #fff;
+  color: #54656f;
+  font-size: 14.5px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.delete-message-sheet-cancel:hover:not(:disabled) {
+  background: #f7f8fa;
+  border-color: #d7dbde;
+}
+
+.delete-message-sheet-cancel:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Desktop/tablet: center the sheet as a proper dialog instead of anchoring
+   to the bottom of the viewport */
+@media (min-width: 700px) {
+  .delete-message-sheet-backdrop {
+    align-items: center;
+  }
+  .delete-message-sheet {
+    border-radius: 18px;
+  }
+}
+
+/* ---------- Undo "delete for everyone" toast ---------- */
+.undo-delete-toast {
+  position: fixed;
+  bottom: 84px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: #1e2b30;
+  color: #fff;
+  padding: 9px 10px 9px 12px;
+  border-radius: 999px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.32);
+  z-index: 70;
+  font-size: 13.5px;
+  animation: toast-rise-in 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes toast-rise-in {
+  from { transform: translate(-50%, 10px); opacity: 0; }
+  to { transform: translate(-50%, 0); opacity: 1; }
+}
+
+.undo-delete-toast-ring {
+  position: relative;
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.undo-delete-toast-ring svg {
+  position: absolute;
+  inset: 0;
+  transform: rotate(-90deg);
+}
+
+.undo-delete-toast-ring-track {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.18);
+  stroke-width: 1.6;
+}
+
+.undo-delete-toast-ring-progress {
+  fill: none;
+  stroke: #53bdeb;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.25s linear;
+}
+
+.undo-delete-toast-ring-number {
+  position: relative;
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #fff;
+}
+
+.undo-delete-toast-text {
+  color: #d1d7db;
+  white-space: nowrap;
+}
+
+.undo-delete-toast-divider {
+  width: 1px;
+  height: 18px;
+  background: rgba(255, 255, 255, 0.14);
+  flex-shrink: 0;
+}
+
+.undo-delete-toast-btn {
+  background: none;
+  border: none;
+  color: #53bdeb;
+  font-weight: 700;
+  font-size: 13.5px;
+  cursor: pointer;
+  padding: 6px 10px;
+  border-radius: 999px;
+  transition: background 0.15s ease;
+  white-space: nowrap;
+}
+
+.undo-delete-toast-btn:hover {
+  background: rgba(83, 189, 235, 0.14);
+}
+
+/* A bubble mid-undo-window looks identical to a finalized deleted bubble
+   but stays slightly dimmer so it visually reads as "still settling". */
+.message-bubble.pending-delete {
+  opacity: 0.75;
 }
 
 /* =========================================================

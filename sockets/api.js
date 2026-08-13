@@ -56,6 +56,9 @@ export const clearChat = (userId) => api.delete(`/messages/clear/${userId}`);
 export const deleteMessage = (messageId, forEveryone = false) =>
   api.delete(`/messages/message/${messageId}`, { data: { forEveryone } });
 
+export const undoDeleteMessage = (messageId) =>
+  api.post(`/messages/${messageId}/undo-delete`);
+
 // Uploads one chat attachment (image/video/voice/file) and returns
 // { attachment: { url, fileName, fileSize, mimeType, duration? } }.
 // `type` must be appended to the FormData BEFORE `file` — see the

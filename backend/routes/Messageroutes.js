@@ -9,6 +9,66 @@ const router = express.Router();
 // mirroring WhatsApp's own cutoff for the same action.
 const DELETE_FOR_EVERYONE_WINDOW_MS = 2 * 24 * 60 * 60 * 1000 + 12 * 60 * 60 * 1000; // 2 days 12 hours
 
+
+const UNDO_DELETE_GRACE_MS = 10 * 1000; // 10 seconds
+
+// ---------------------------------------------------------------------
+// Delete-for-everyone finalize helpers
+// ---------------------------------------------------------------------
+async function finalizeDeleteForEveryone(io, messageId) {
+  const message = await Message.findById(messageId);
+  if (!message) return;
+  if (message.deletedForEveryone) return; // already finalized
+  if (!message.deleteForEveryonePendingAt) return; // was undone in the meantime
+
+  message.deletedForEveryone = true;
+  message.deletedAt = new Date();
+  message.deleteForEveryonePendingAt = null;
+  message.deleteForEveryoneUndoExpiresAt = null;
+  message.content = "";
+  message.attachment = undefined;
+  await message.save();
+
+  if (io) {
+    io.to(`user_${message.sender}`).emit("messageDeleted", {
+      messageId: message._id,
+      forEveryone: true,
+      withUserId: message.receiver,
+    });
+    io.to(`user_${message.receiver}`).emit("messageDeleted", {
+      messageId: message._id,
+      forEveryone: true,
+      withUserId: message.sender,
+    });
+  }
+}
+
+function scheduleFinalizeDelete(io, messageId, delayMs) {
+  setTimeout(() => {
+    finalizeDeleteForEveryone(io, messageId).catch((err) =>
+      console.error("finalizeDeleteForEveryone error:", err.message)
+    );
+  }, delayMs);
+}
+
+// Safety net for server restarts: an in-memory setTimeout scheduled above
+// is lost if the process restarts mid-grace-window. Sweeping for any
+// pending deletes whose window has already lapsed and finalizing them
+// keeps the eventual state correct even after a crash/restart, at the
+// cost of the other participant seeing the delete a little late instead
+// of exactly on time.
+async function sweepStalePendingDeletes(io) {
+  try {
+    const stale = await Message.find({
+      deleteForEveryonePendingAt: { $ne: null },
+      deleteForEveryoneUndoExpiresAt: { $lt: new Date() },
+    }).select("_id");
+    await Promise.all(stale.map((m) => finalizeDeleteForEveryone(io, m._id)));
+  } catch (err) {
+    console.error("sweepStalePendingDeletes error:", err.message);
+  }
+}
+
 // Uploads a chat attachment (image/video/voice/file) and returns its URL +
 // metadata. This does NOT create a Message document or notify anyone —
 // it's a plain REST upload. The actual message gets created over the
@@ -51,6 +111,10 @@ router.get("/:userId", protect, async (req, res) => {
 
     const limit = Math.min(parseInt(req.query.limit, 10) || 30, 100);
     const before = req.query.before; // ISO date string cursor: only messages older than this
+
+    // Fire-and-forget: finalize any pending deletes left over from before
+    // a server restart. Doesn't block this read.
+    sweepStalePendingDeletes(req.app.get("io"));
 
     const query = {
       $or: [
@@ -247,11 +311,17 @@ router.delete("/clear/:userId", protect, async (req, res) => {
 // @route  DELETE /api/messages/message/:id
 // Body: { forEveryone: boolean }
 // "Delete for me" removes the message from only the requester's view
-// (same mechanism as clearing a whole chat). "Delete for everyone" is
-// only allowed for the original sender, only within a time window, and
-// wipes the actual content/attachment for both participants — the
-// document itself is kept so a "This message was deleted" placeholder
-// can render in its original spot, exactly like WhatsApp.
+// (same mechanism as clearing a whole chat) and is final immediately.
+//
+// "Delete for everyone" is now a SOFT delete: it only marks the message
+// as "pending deletion" and starts a short undo window
+// (UNDO_DELETE_GRACE_MS). Only the sender's own other tabs/devices are
+// told about the pending state (via "messageDeletePending") — the other
+// participant isn't notified yet and keeps seeing the message completely
+// normally. If the sender doesn't undo in time, a server-side timer
+// finalizes the delete: content is wiped, deletedForEveryone flips to
+// true, and only THEN is the other participant told, via the same
+// "messageDeleted" event this route always emitted.
 router.delete("/message/:id", protect, async (req, res) => {
   try {
     const myId = req.user._id;
@@ -288,6 +358,18 @@ router.delete("/message/:id", protect, async (req, res) => {
     if (message.deletedForEveryone) {
       return res.json({ deleted: true, forEveryone: true, messageId: message._id });
     }
+    if (message.deleteForEveryonePendingAt) {
+      // Already pending (e.g. triggered from another tab a moment ago) —
+      // just hand back the existing deadline so this tab's UI can sync
+      // its own countdown instead of starting a brand new one.
+      return res.json({
+        deleted: true,
+        forEveryone: true,
+        pending: true,
+        messageId: message._id,
+        undoExpiresAt: message.deleteForEveryoneUndoExpiresAt,
+      });
+    }
     const age = Date.now() - new Date(message.createdAt).getTime();
     if (age > DELETE_FOR_EVERYONE_WINDOW_MS) {
       return res.status(400).json({
@@ -295,31 +377,69 @@ router.delete("/message/:id", protect, async (req, res) => {
       });
     }
 
-    message.deletedForEveryone = true;
-    message.deletedAt = new Date();
-    message.content = "";
-    message.attachment = undefined;
+    const undoExpiresAt = new Date(Date.now() + UNDO_DELETE_GRACE_MS);
+    message.deleteForEveryonePendingAt = new Date();
+    message.deleteForEveryoneUndoExpiresAt = undoExpiresAt;
     await message.save();
 
-    // Notify both participants' other open tabs/devices in realtime so
-    // the message flips to "This message was deleted" without a refresh.
     const io = req.app.get("io");
     if (io) {
-      const receiverId =
-        String(message.sender) === String(myId) ? message.receiver : message.sender;
-      io.to(`user_${myId}`).emit("messageDeleted", {
+      // Only MY other tabs/devices learn this is pending — the receiver
+      // stays in the dark until it's actually finalized.
+      io.to(`user_${myId}`).emit("messageDeletePending", {
         messageId: message._id,
-        forEveryone: true,
-        withUserId: receiverId,
-      });
-      io.to(`user_${receiverId}`).emit("messageDeleted", {
-        messageId: message._id,
-        forEveryone: true,
-        withUserId: myId,
+        undoExpiresAt,
       });
     }
 
-    res.json({ deleted: true, forEveryone: true, messageId: message._id });
+    scheduleFinalizeDelete(io, message._id, UNDO_DELETE_GRACE_MS);
+
+    res.json({
+      deleted: true,
+      forEveryone: true,
+      pending: true,
+      messageId: message._id,
+      undoExpiresAt,
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// @route  POST /api/messages/:id/undo-delete
+// Cancels a still-pending "delete for everyone" before its grace window
+// elapses. Only the original sender can undo, and only in time — the
+// server's stored deadline is authoritative, never the client's own
+// countdown, so a client clock drift can't extend the window.
+router.post("/:id/undo-delete", protect, async (req, res) => {
+  try {
+    const myId = req.user._id;
+    const message = await Message.findOne({ _id: req.params.id, sender: myId });
+    if (!message) return res.status(404).json({ message: "Message not found" });
+
+    if (message.deletedForEveryone) {
+      return res.status(400).json({ message: "This message was already deleted for everyone" });
+    }
+    if (
+      !message.deleteForEveryonePendingAt ||
+      !message.deleteForEveryoneUndoExpiresAt ||
+      Date.now() > message.deleteForEveryoneUndoExpiresAt.getTime()
+    ) {
+      return res.status(400).json({ message: "The undo window has expired" });
+    }
+
+    message.deleteForEveryonePendingAt = null;
+    message.deleteForEveryoneUndoExpiresAt = null;
+    await message.save();
+
+    const io = req.app.get("io");
+    if (io) {
+      // The receiver never knew a delete was pending, so only my own
+      // tabs/devices need telling it was cancelled.
+      io.to(`user_${myId}`).emit("messageDeleteUndone", { messageId: message._id });
+    }
+
+    res.json({ undone: true, messageId: message._id });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }
