@@ -140,6 +140,34 @@ function AttachmentContent({ message, onOpenMedia, onMediaLoad }) {
   return <span className="message-content">{content}</span>;
 }
 
+// Small, self-contained "Undo" pill shown inline inside a bubble that's
+// sitting in its post-delete grace window. Deliberately compact (a chip,
+// not a banner) so it reads as part of the bubble rather than an alert.
+// The filled backdrop behind the label drains from 100% -> 0% over the
+// grace window, doubling as a quiet countdown without needing a number.
+function InlineUndoButton({ undoInfo, onUndo }) {
+  const progress =
+    undoInfo && undoInfo.totalSeconds
+      ? Math.max(0, Math.min(1, undoInfo.secondsLeft / undoInfo.totalSeconds))
+      : 0;
+
+  return (
+    <button
+      type="button"
+      className="message-undo-inline-btn"
+      onClick={onUndo}
+      title="Undo delete"
+    >
+      <span
+        className="message-undo-inline-btn-progress"
+        style={{ width: `${progress * 100}%` }}
+        aria-hidden="true"
+      />
+      <span className="message-undo-inline-btn-label">Undo</span>
+    </button>
+  );
+}
+
 export default function MessageBubble({
   message,
   isOwn,
@@ -148,19 +176,25 @@ export default function MessageBubble({
   onMediaLoad,
   onToggleStar,
   onDoubleClick,
+  undoInfo, // { secondsLeft, totalSeconds } while this message can still be undone, else null/undefined
+  onUndoDelete,
 }) {
   const isDeleted = Boolean(message.deletedForEveryone);
-  const isMedia = !isDeleted && message.type && message.type !== "text";
+  // Only the sender sees this state (the server only tells the sender's own
+  // tabs about a pending delete), so undoInfo being present is what actually
+  // gates the button — pendingDeleteForEveryone alone just greys the bubble.
+  const isPendingUndo = !isDeleted && Boolean(message.pendingDeleteForEveryone);
+  const isMedia = !isDeleted && !isPendingUndo && message.type && message.type !== "text";
 
   return (
     <div className={`message-row ${isOwn ? "own" : "other"}`}>
       <div
         className={`message-bubble ${isOwn ? "own-bubble" : "other-bubble"} ${
           isMedia ? `bubble-${message.type}` : ""
-        } ${isDeleted ? "bubble-deleted" : ""}`}
-        onDoubleClick={onDoubleClick ? () => onDoubleClick(message) : undefined}
+        } ${isDeleted ? "bubble-deleted" : ""} ${isPendingUndo ? "bubble-pending-undo" : ""}`}
+        onDoubleClick={onDoubleClick && !isPendingUndo ? () => onDoubleClick(message) : undefined}
       >
-        {!isDeleted && onToggleStar && (
+        {!isDeleted && !isPendingUndo && onToggleStar && (
           <button
             type="button"
             className={`message-star-btn${isStarred ? " starred" : ""}`}
@@ -179,18 +213,18 @@ export default function MessageBubble({
             </svg>
             This message was deleted
           </span>
-        ) :(message.deletedForEveryone || message.pendingDeleteForEveryone) ? (
-  <div className="message-deleted-content">
-    <span>🚫</span>
-    <span>This message was deleted</span>
-  </div>
-) :  (
+        ) : isPendingUndo ? (
+          <div className="message-undo-inline">
+            <span className="message-undo-inline-text">Message deleted</span>
+            {undoInfo && <InlineUndoButton undoInfo={undoInfo} onUndo={onUndoDelete} />}
+          </div>
+        ) : (
           <AttachmentContent message={message} onOpenMedia={onOpenMedia} onMediaLoad={onMediaLoad} />
         )}
         <span className="message-meta">
-          {isStarred && !isDeleted && <span className="message-star-badge">★</span>}
+          {isStarred && !isDeleted && !isPendingUndo && <span className="message-star-badge">★</span>}
           <span className="message-time">{formatTime(message.createdAt)}</span>
-          {isOwn && !isDeleted && <Ticks status={message.status} />}
+          {isOwn && !isDeleted && !isPendingUndo && <Ticks status={message.status} />}
         </span>
       </div>
     </div>

@@ -102,6 +102,13 @@ export default function ChatWindow({ contact, onBack }) {
   const recordingStartRef = useRef(null);
   const isStartingRecordingRef = useRef(false); // guards against a double-click starting two recordings
   const prevContactIdRef = useRef(null); // last contact we auto-scrolled for, so we only force-jump on an actual chat switch
+  const activeContactIdRef = useRef(null); // always the truly-current contact id, kept in sync below (unlike a stale closure)
+  // messageId -> { contactId, undoExpiresAt } for any delete-for-everyone still
+  // inside its undo window, regardless of whether that chat is the one on
+  // screen right now — lets the countdown (and the button) survive switching
+  // to another chat and back, instead of being tied to whichever chat happens
+  // to be open.
+  const pendingDeleteInfoRef = useRef(new Map());
 
   // Sentinel that can never equal a real contact id (or null), so the
   // render-phase reset below always runs on the very first render too.
@@ -121,6 +128,7 @@ export default function ChatWindow({ contact, onBack }) {
   const nextContactId = contact?._id ?? null;
   if (nextContactId !== renderedContactId) {
     setRenderedContactId(nextContactId);
+    activeContactIdRef.current = nextContactId ? String(nextContactId) : null;
     if (contact) {
       const cached = messageCacheRef.current.get(String(contact._id));
       setMessages(cached?.messages || []);
@@ -137,10 +145,31 @@ export default function ChatWindow({ contact, onBack }) {
     setSendError("");
     // Never show the scrollbar just because we switched chats
     setShowScrollbar(false);
-    // A pending-delete toast (and its countdown) belongs to the chat it
-    // was raised in — don't let it linger, misattributed, in a new chat.
+    // A pending "delete for everyone" doesn't belong to any one chat view —
+    // it belongs to the message. If the chat we're switching into has one
+    // still inside its undo window, pick the countdown back up right where
+    // it really is (based on the real expiry time, not a fresh 10s); if it
+    // has none (or it already lapsed while we were away), just clear the UI.
     if (undoToastIntervalRef.current) clearInterval(undoToastIntervalRef.current);
-    setUndoToast(null);
+    const nextIdStr = nextContactId ? String(nextContactId) : null;
+    let resumedUndo = null;
+    if (nextIdStr) {
+      for (const [pendingMessageId, info] of pendingDeleteInfoRef.current) {
+        if (info.contactId === nextIdStr) {
+          if (new Date(info.undoExpiresAt).getTime() > Date.now()) {
+            resumedUndo = { messageId: pendingMessageId, undoExpiresAt: info.undoExpiresAt };
+          } else {
+            pendingDeleteInfoRef.current.delete(pendingMessageId);
+          }
+          break;
+        }
+      }
+    }
+    if (resumedUndo) {
+      showUndoToast(resumedUndo.messageId, resumedUndo.undoExpiresAt);
+    } else {
+      setUndoToast(null);
+    }
   }
 
   useEffect(() => {
@@ -262,49 +291,112 @@ export default function ChatWindow({ contact, onBack }) {
   // server to finalize anything. The other participant is never told this
   // happened; they keep seeing the message completely normally until (and
   // unless) the delete is actually finalized.
+  // Marks a message as "pending deletion" in the given chat's cache — this
+  // greys the bubble out right away. If that chat happens to be the one on
+  // screen, the live view updates too; if not (we've since switched away),
+  // only the cache is touched, and the switch-back logic above will restore
+  // the live view (and the undo button) from that cache. The other
+  // participant is never told this happened; they keep seeing the message
+  // completely normally until (and unless) the delete is actually finalized.
   const applyPendingDeleteLocally = (contactId, messageId, undoExpiresAt) => {
-    setMessages((prev) => {
-      const next = prev.map((m) =>
+    pendingDeleteInfoRef.current.set(String(messageId), { contactId, undoExpiresAt });
+
+    const cached = messageCacheRef.current.get(contactId);
+    if (cached) {
+      const next = cached.messages.map((m) =>
         String(m._id) === String(messageId)
           ? { ...m, pendingDeleteForEveryone: true, deleteForEveryoneUndoExpiresAt: undoExpiresAt }
           : m
       );
-      const prevCached = messageCacheRef.current.get(contactId);
-      messageCacheRef.current.set(contactId, { messages: next, hasMore: prevCached?.hasMore ?? false });
-      return next;
-    });
+      messageCacheRef.current.set(contactId, { messages: next, hasMore: cached.hasMore });
+    }
+
+    if (activeContactIdRef.current === contactId) {
+      setMessages((prev) =>
+        prev.map((m) =>
+          String(m._id) === String(messageId)
+            ? { ...m, pendingDeleteForEveryone: true, deleteForEveryoneUndoExpiresAt: undoExpiresAt }
+            : m
+        )
+      );
+    }
   };
 
   const clearPendingDeleteLocally = (contactId, messageId) => {
-    setMessages((prev) => {
-      const next = prev.map((m) =>
+    pendingDeleteInfoRef.current.delete(String(messageId));
+
+    const cached = messageCacheRef.current.get(contactId);
+    if (cached) {
+      const next = cached.messages.map((m) =>
         String(m._id) === String(messageId)
           ? { ...m, pendingDeleteForEveryone: false, deleteForEveryoneUndoExpiresAt: null }
           : m
       );
-      const prevCached = messageCacheRef.current.get(contactId);
-      messageCacheRef.current.set(contactId, { messages: next, hasMore: prevCached?.hasMore ?? false });
-      return next;
-    });
-  };
+      messageCacheRef.current.set(contactId, { messages: next, hasMore: cached.hasMore });
+    }
 
-const showUndoToast = (messageId, undoExpiresAt) => {
-  if (undoToastIntervalRef.current) clearInterval(undoToastIntervalRef.current);
-
-  const expiresMs = new Date(undoExpiresAt).getTime();
-  const totalSeconds = Math.max(1, Math.round((expiresMs - Date.now()) / 1000));
-
-  const tick = () => {
-    const secondsLeft = Math.max(0, Math.ceil((expiresMs - Date.now()) / 1000));
-    setUndoToast({ messageId, secondsLeft, totalSeconds, undoExpiresAt });
-    if (secondsLeft <= 0) {
-      clearInterval(undoToastIntervalRef.current);
-      setUndoToast(null);
+    if (activeContactIdRef.current === contactId) {
+      setMessages((prev) =>
+        prev.map((m) =>
+          String(m._id) === String(messageId)
+            ? { ...m, pendingDeleteForEveryone: false, deleteForEveryoneUndoExpiresAt: null }
+            : m
+        )
+      );
     }
   };
-  tick();
-  undoToastIntervalRef.current = setInterval(tick, 250);
-};
+
+  // Flips a message to its fully-finalized "deleted for everyone" state in
+  // the given chat's cache (and live view, if that chat is on screen),
+  // regardless of which chat happens to be open when the finalize event
+  // actually arrives.
+  const finalizeDeleteForEveryoneLocally = (contactId, messageId) => {
+    pendingDeleteInfoRef.current.delete(String(messageId));
+    const wipe = (m) =>
+      String(m._id) === String(messageId)
+        ? {
+            ...m,
+            deletedForEveryone: true,
+            pendingDeleteForEveryone: false,
+            deleteForEveryoneUndoExpiresAt: null,
+            content: "",
+            attachment: undefined,
+          }
+        : m;
+
+    if (contactId) {
+      const cached = messageCacheRef.current.get(contactId);
+      if (cached) {
+        messageCacheRef.current.set(contactId, { messages: cached.messages.map(wipe), hasMore: cached.hasMore });
+      }
+    }
+
+    if (!contactId || activeContactIdRef.current === contactId) {
+      setMessages((prev) => prev.map(wipe));
+    }
+  };
+
+  // Hoisted (function declaration, not a const) so it can be called from the
+  // contact-switch block above — which runs earlier in the component body,
+  // on every render — to resume an in-flight countdown for a chat we're
+  // switching back into.
+  function showUndoToast(messageId, undoExpiresAt) {
+    if (undoToastIntervalRef.current) clearInterval(undoToastIntervalRef.current);
+
+    const expiresMs = new Date(undoExpiresAt).getTime();
+    const totalSeconds = Math.max(1, Math.round((expiresMs - Date.now()) / 1000));
+
+    const tick = () => {
+      const secondsLeft = Math.max(0, Math.ceil((expiresMs - Date.now()) / 1000));
+      setUndoToast({ messageId, secondsLeft, totalSeconds, undoExpiresAt });
+      if (secondsLeft <= 0) {
+        clearInterval(undoToastIntervalRef.current);
+        setUndoToast(null);
+      }
+    };
+    tick();
+    undoToastIntervalRef.current = setInterval(tick, 250);
+  }
 
   const dismissUndoToast = () => {
     if (undoToastIntervalRef.current) clearInterval(undoToastIntervalRef.current);
@@ -312,13 +404,13 @@ const showUndoToast = (messageId, undoExpiresAt) => {
   };
 
   const handleUndoDelete = async () => {
-    if (!undoToast || !contact) return;
+    if (!undoToast) return;
     const { messageId } = undoToast;
-    const contactId = String(contact._id);
+    const contactId = pendingDeleteInfoRef.current.get(String(messageId))?.contactId || activeContactIdRef.current;
     dismissUndoToast();
     try {
       await undoDeleteMessage(messageId);
-      clearPendingDeleteLocally(contactId, messageId);
+      if (contactId) clearPendingDeleteLocally(contactId, messageId);
     } catch (err) {
       console.error("Failed to undo delete:", err);
       // Most likely the grace window had already lapsed server-side — the
@@ -421,16 +513,25 @@ const showUndoToast = (messageId, undoExpiresAt) => {
     // A "delete for everyone" I triggered just entered its undo window —
     // fired only to MY OWN other tabs/devices, never to the other
     // participant. Sync the pending state + toast here too, so every tab
-    // I have open agrees on the countdown.
+    // I have open agrees on the countdown. (No conversation id comes with
+    // this event, so if we already recorded which chat it belongs to —
+    // e.g. this is the very tab that triggered the delete — trust that;
+    // otherwise fall back to whichever chat is currently open.)
     const handleMessageDeletePending = ({ messageId, undoExpiresAt }) => {
-      applyPendingDeleteLocally(contactId, messageId, undoExpiresAt);
-      showUndoToast(messageId, undoExpiresAt);
+      const owningContactId =
+        pendingDeleteInfoRef.current.get(String(messageId))?.contactId || contactId;
+      applyPendingDeleteLocally(owningContactId, messageId, undoExpiresAt);
+      if (owningContactId === activeContactIdRef.current) {
+        showUndoToast(messageId, undoExpiresAt);
+      }
     };
 
     // I hit Undo (on this tab or another one) in time — revert the local
     // pending state and drop the toast if it's still showing this message.
     const handleMessageDeleteUndone = ({ messageId }) => {
-      clearPendingDeleteLocally(contactId, messageId);
+      const owningContactId =
+        pendingDeleteInfoRef.current.get(String(messageId))?.contactId || contactId;
+      clearPendingDeleteLocally(owningContactId, messageId);
       setUndoToast((current) =>
         current && String(current.messageId) === String(messageId) ? null : current
       );
@@ -439,27 +540,33 @@ const showUndoToast = (messageId, undoExpiresAt) => {
     // A message was deleted — either by me (on another tab/device) via
     // "delete for me", or the undo window on a "delete for everyone"
     // fully lapsed and the server just finalized it. Either way, reflect
-    // it in this chat's message list immediately.
-    const handleMessageDeleted = ({ messageId, forEveryone }) => {
-      setMessages((prev) => {
-        const next = forEveryone
-          ? prev.map((m) =>
-              String(m._id) === String(messageId)
-                ? {
-                    ...m,
-                    deletedForEveryone: true,
-                    pendingDeleteForEveryone: false,
-                    deleteForEveryoneUndoExpiresAt: null,
-                    content: "",
-                    attachment: undefined,
-                  }
-                : m
-            )
-          : prev.filter((m) => String(m._id) !== String(messageId));
-        const prevCached = messageCacheRef.current.get(contactId);
-        messageCacheRef.current.set(contactId, { messages: next, hasMore: prevCached?.hasMore ?? false });
-        return next;
-      });
+    // it in the right chat's message list immediately, whether or not
+    // that chat happens to be the one on screen right now.
+    const handleMessageDeleted = ({ messageId, forEveryone, withUserId }) => {
+      if (forEveryone) {
+        const owningContactId =
+          pendingDeleteInfoRef.current.get(String(messageId))?.contactId ||
+          (withUserId ? String(withUserId) : contactId);
+        finalizeDeleteForEveryoneLocally(owningContactId, messageId);
+      } else {
+        const owningContactId = withUserId ? String(withUserId) : contactId;
+        if (owningContactId === activeContactIdRef.current) {
+          setMessages((prev) => {
+            const next = prev.filter((m) => String(m._id) !== String(messageId));
+            const prevCached = messageCacheRef.current.get(owningContactId);
+            messageCacheRef.current.set(owningContactId, { messages: next, hasMore: prevCached?.hasMore ?? false });
+            return next;
+          });
+        } else {
+          const cached = messageCacheRef.current.get(owningContactId);
+          if (cached) {
+            messageCacheRef.current.set(owningContactId, {
+              messages: cached.messages.filter((m) => String(m._id) !== String(messageId)),
+              hasMore: cached.hasMore,
+            });
+          }
+        }
+      }
       // In case the undo window lapsed while the toast was still showing
       // (e.g. this tab's own countdown drifted), make sure it's gone too.
       setUndoToast((current) =>
@@ -1042,7 +1149,7 @@ const showUndoToast = (messageId, undoExpiresAt) => {
                 onClick={handleClearChat}
                 disabled={deletingChat}
               >
-                <span className="chat-header-menu-item-icon" aria-hidden="true">🧹</span>
+                <span className="chat-header-menu-item-icon" aria-hidden="true"></span>
                 <span>{deletingChat ? "Clearing..." : "Clear chat"}</span>
               </button>
               <button
@@ -1051,7 +1158,7 @@ const showUndoToast = (messageId, undoExpiresAt) => {
                 onClick={handleToggleBlockFromMenu}
                 disabled={headerMenuBusy}
               >
-                <span className="chat-header-menu-item-icon" aria-hidden="true">⛔</span>
+                <span className="chat-header-menu-item-icon" aria-hidden="true"></span>
                 <span>
                   {headerMenuBusy
                     ? "Please wait..."
@@ -1106,6 +1213,8 @@ const showUndoToast = (messageId, undoExpiresAt) => {
         onMediaLoad={handleMediaLoad}
         onToggleStar={handleToggleStar}
         onDoubleClick={openDeleteSheetForMessage}
+        undoInfo={undoToast && undoToast.messageId === m._id ? undoToast : null}
+        onUndoDelete={handleUndoDelete}
       />
     </React.Fragment>
   );
@@ -1338,31 +1447,6 @@ const showUndoToast = (messageId, undoExpiresAt) => {
   </div>
 )}
 
-{undoToast && (
-  <div className="undo-delete-toast" role="status">
-    <span className="undo-delete-toast-ring" aria-hidden="true">
-      <svg viewBox="0 0 24 24" width="24" height="24">
-        <circle className="undo-delete-toast-ring-track" cx="12" cy="12" r="9.5" />
-        <circle
-          className="undo-delete-toast-ring-progress"
-          cx="12"
-          cy="12"
-          r="9.5"
-          style={{
-            strokeDasharray: 59.7,
-            strokeDashoffset: 59.7 * (1 - undoToast.secondsLeft / undoToast.totalSeconds),
-          }}
-        />
-      </svg>
-      <span className="undo-delete-toast-ring-number">{undoToast.secondsLeft}</span>
-    </span>
-    <span className="undo-delete-toast-text">Message deleted</span>
-    <span className="undo-delete-toast-divider" aria-hidden="true" />
-    <button type="button" className="undo-delete-toast-btn" onClick={handleUndoDelete}>
-      Undo
-    </button>
-  </div>
-)}
     </div>
   );
 }

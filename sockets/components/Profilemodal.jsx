@@ -476,7 +476,7 @@ export default function ProfileModal() {
                         className="profile-list-row profile-row-button"
                         onClick={() => setView(VIEWS.BLOCKED)}
                       >
-                        <span className="profile-row-icon" aria-hidden="true">⛔</span>
+                        <span className="profile-row-icon" aria-hidden="true"></span>
                         <span className="profile-row-label">Blocked contacts</span>
                         <span className="profile-row-chevron" aria-hidden="true">›</span>
                       </button>
@@ -568,7 +568,7 @@ export default function ProfileModal() {
                       onClick={handleToggleBlock}
                       disabled={blocking}
                     >
-                      <span className="profile-row-icon" aria-hidden="true">⛔</span>
+                      <span className="profile-row-icon" aria-hidden="true"></span>
                       <span className="profile-row-label">
                         {blocking
                           ? "Please wait..."
