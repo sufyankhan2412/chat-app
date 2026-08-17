@@ -7,18 +7,23 @@ import {
 } from "react-router-dom";
 import { AuthProvider, useAuth } from "../context/Authcontext";
 import { SocketProvider } from "../context/Socketcontext";
+import { CallProvider } from "../context/Callcontext";
 import { ProfileModalProvider } from "../context/Profilemodalcontext";
 import Login from "../components/Login";
 import Signup from "../components/Signup";
 import Sidebar from "../components/Sidebar";
 import ChatWindow from "../components/ChatWindow";
 import ProfileModal from "../components/ProfileModal";
+import CallModal from "../components/CallModal";
 
 function SocketProviderWrapper({ children }) {
   const { token, user } = useAuth();
   return (
     <SocketProvider token={token} user={user}>
-      {children}
+      <CallProvider>
+        {children}
+        <CallModal />
+      </CallProvider>
     </SocketProvider>
   );
 }

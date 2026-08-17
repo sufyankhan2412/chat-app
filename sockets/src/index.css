@@ -926,6 +926,19 @@ body {
 }
 
 /* ---------- Chat header "⋮" menu (Block user) ---------- */
+.chat-header-call-btn {
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.chat-header-call-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.chat-header-call-btn:active:not(:disabled) {
+  transform: scale(0.92);
+}
+
 .chat-header-menu-wrapper {
   position: relative;
   flex-shrink: 0;
@@ -2832,5 +2845,261 @@ button.profile-row-danger:disabled {
   .profile-error {
     width: calc(100% - 36px);
     margin: 0 18px 12px;
+  }
+}
+/* =========================================================
+   WhatsApp-style call UI (audio + video calls over WebRTC)
+   ========================================================= */
+
+.call-toast {
+  position: fixed;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(17, 27, 33, 0.92);
+  color: #fff;
+  padding: 10px 18px;
+  border-radius: 10px;
+  font-size: 13px;
+  z-index: 200;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+  animation: call-toast-in 0.18s ease-out;
+}
+
+@keyframes call-toast-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -8px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+.call-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  background: linear-gradient(155deg, #0b2e2a 0%, #071d2b 55%, #0f3b56 100%);
+  color: #fff;
+  padding: 48px 24px 40px;
+  overflow: hidden;
+}
+
+/* ---- Audio call: centered pulsing avatar ---- */
+.call-audio-stage {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.call-avatar {
+  border-radius: 50%;
+  object-fit: cover;
+  background: #22403c;
+}
+
+.call-avatar-lg {
+  width: 140px;
+  height: 140px;
+  border: 3px solid rgba(255, 255, 255, 0.15);
+}
+
+.call-avatar-ring {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+}
+
+.call-avatar-ring-pulse::before,
+.call-avatar-ring-pulse::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 2px solid rgba(37, 211, 102, 0.55);
+  animation: call-ring-pulse 2.2s ease-out infinite;
+}
+
+.call-avatar-ring-pulse::after {
+  animation-delay: 1.1s;
+}
+
+@keyframes call-ring-pulse {
+  0% {
+    transform: scale(1);
+    opacity: 0.8;
+  }
+  100% {
+    transform: scale(1.55);
+    opacity: 0;
+  }
+}
+
+/* ---- Video call: fullscreen remote feed + PiP local preview ---- */
+.call-video-stage {
+  position: absolute;
+  inset: 0;
+  background: #000;
+}
+
+.call-remote-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.call-video-waiting {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 14px;
+}
+
+.call-local-video {
+  position: absolute;
+  bottom: 120px;
+  right: 20px;
+  width: 108px;
+  height: 152px;
+  border-radius: 14px;
+  object-fit: cover;
+  background: #1a2b2a;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  transform: scaleX(-1); /* mirror, like a selfie camera */
+}
+
+.call-local-video-off {
+  opacity: 0;
+}
+
+/* ---- Name / status ---- */
+.call-info-bar {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  text-align: center;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.45);
+}
+
+.call-contact-name {
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.call-status-text {
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.8);
+  letter-spacing: 0.02em;
+}
+
+/* ---- Controls ---- */
+.call-controls {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 26px;
+  padding-top: 12px;
+}
+
+.call-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  color: #fff;
+  transition: transform 0.12s ease, background 0.15s ease;
+  flex-shrink: 0;
+}
+
+.call-btn:active {
+  transform: scale(0.92);
+}
+
+.call-btn-secondary {
+  width: 52px;
+  height: 52px;
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.call-btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.26);
+}
+
+.call-btn-active {
+  background: #fff;
+  color: #111b21;
+}
+
+.call-btn-accept {
+  background: #25d366;
+  box-shadow: 0 6px 18px rgba(37, 211, 102, 0.45);
+}
+
+.call-btn-accept:hover {
+  background: #1fbd5a;
+}
+
+.call-btn-decline {
+  background: #e74c3c;
+  box-shadow: 0 6px 18px rgba(231, 76, 60, 0.45);
+}
+
+.call-btn-decline:hover {
+  background: #d8382a;
+}
+
+@media (max-width: 480px) {
+  .call-overlay {
+    padding: 36px 16px 32px;
+  }
+
+  .call-avatar-lg {
+    width: 112px;
+    height: 112px;
+  }
+
+  .call-contact-name {
+    font-size: 19px;
+  }
+
+  .call-local-video {
+    bottom: 108px;
+    right: 14px;
+    width: 92px;
+    height: 130px;
+  }
+
+  .call-btn {
+    width: 54px;
+    height: 54px;
+  }
+
+  .call-btn-secondary {
+    width: 48px;
+    height: 48px;
   }
 }

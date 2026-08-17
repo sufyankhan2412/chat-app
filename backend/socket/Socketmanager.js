@@ -6,6 +6,20 @@ const Contact = require("../models/Contact");
 // In-memory map of userId -> Set<socketId> for currently connected users
 const onlineUsers = new Map();
 
+// In-memory map of userId -> the userId they're currently calling / in a
+// call with (covers both "ringing" and "connected" states). Used only to
+// clean up gracefully if someone's socket drops mid-call.
+const activeCalls = new Map();
+
+function clearActiveCall(userId) {
+  const otherUserId = activeCalls.get(String(userId));
+  activeCalls.delete(String(userId));
+  if (otherUserId) {
+    activeCalls.delete(String(otherUserId));
+  }
+  return otherUserId;
+}
+
 function getReceiverSocketIds(userId) {
   const userSockets = onlineUsers.get(String(userId));
   return userSockets ? Array.from(userSockets) : [];
@@ -208,6 +222,72 @@ try {
       io.to(receiverRoom).emit("stopTyping", { from: userId });
     });
 
+    // ---- WebRTC call signaling (1:1 audio/video calls) ----
+    // The server never touches media — it only relays the SDP offer/answer
+    // and ICE candidates between the two peers, plus tracks who's "in a
+    // call with whom" so a dropped connection cleans up the other side.
+
+    // Caller -> callee: "I'm calling you" + the WebRTC offer.
+    // callType is "audio" | "video".
+    socket.on("callUser", ({ receiverId, offer, callType }) => {
+      if (!receiverId || !offer) return;
+
+      const receiverSocketIds = getReceiverSocketIds(receiverId);
+      if (!receiverSocketIds.length) {
+        // Callee isn't connected at all — tell the caller right away
+        // instead of leaving them "ringing" forever.
+        socket.emit("callFailed", { reason: "offline" });
+        return;
+      }
+
+      activeCalls.set(userKey, String(receiverId));
+      activeCalls.set(String(receiverId), userKey);
+
+      io.to(getUserRoomName(receiverId)).emit("incomingCall", {
+        from: userId,
+        offer,
+        callType,
+      });
+    });
+
+    // Callee -> caller: "I accepted" + the WebRTC answer.
+    socket.on("answerCall", ({ callerId, answer }) => {
+      if (!callerId || !answer) return;
+      io.to(getUserRoomName(callerId)).emit("callAnswered", { answer });
+    });
+
+    // Either side, any time during setup or the call: forward ICE candidates.
+    socket.on("iceCandidate", ({ targetId, candidate }) => {
+      if (!targetId || !candidate) return;
+      io.to(getUserRoomName(targetId)).emit("iceCandidate", {
+        from: userId,
+        candidate,
+      });
+    });
+
+    // Callee declines before answering.
+    socket.on("rejectCall", ({ callerId, reason }) => {
+      clearActiveCall(userId);
+      if (!callerId) return;
+      io.to(getUserRoomName(callerId)).emit("callRejected", {
+        reason: reason || "declined",
+      });
+    });
+
+    // Caller hangs up before the callee answers.
+    socket.on("cancelCall", ({ receiverId }) => {
+      clearActiveCall(userId);
+      if (!receiverId) return;
+      io.to(getUserRoomName(receiverId)).emit("callCancelled", {});
+    });
+
+    // Either side ends an in-progress call.
+    socket.on("endCall", ({ targetId }) => {
+      clearActiveCall(userId);
+      if (!targetId) return;
+      io.to(getUserRoomName(targetId)).emit("callEnded", {});
+    });
+
     // ---- Disconnect ----
     socket.on("disconnect", async () => {
       const userKey = String(userId);
@@ -227,6 +307,16 @@ if (userSockets.size === 0) {
     console.error("Error setting user offline:", err.message);
   }
   socket.broadcast.emit("userOffline", { userId, lastSeen });
+
+  // If this user dropped mid-call (closed the tab, lost connection,
+  // etc.), let their call partner know instead of leaving them stuck
+  // on a frozen video feed.
+  const otherUserId = clearActiveCall(userKey);
+  if (otherUserId) {
+    io.to(getUserRoomName(otherUserId)).emit("callEnded", {
+      reason: "disconnected",
+    });
+  }
 }
       }
     });
