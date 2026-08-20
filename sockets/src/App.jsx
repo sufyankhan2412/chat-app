@@ -42,6 +42,18 @@ function ChatPage() {
   );
 }
 
+// Calls page also opens contact info (via "View contact" in the call
+// detail modal), so it needs its own ProfileModalProvider + <ProfileModal />
+// the same way ChatPage does — this context isn't global, it's per-page.
+function CallsPage() {
+  return (
+    <ProfileModalProvider>
+      <CallLogsPage />
+      <ProfileModal />
+    </ProfileModalProvider>
+  );
+}
+
 function PrivateRoute({ children }) {
   const { user, loading } = useAuth();
   if (loading) return <div className="loading-screen">Loading...</div>;
@@ -85,7 +97,7 @@ function AppRoutes() {
         path="/calls"
         element={
           <PrivateRoute>
-            <CallLogsPage />
+            <CallsPage />
           </PrivateRoute>
         }
       />

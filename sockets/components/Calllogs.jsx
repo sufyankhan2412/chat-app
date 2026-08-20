@@ -6,6 +6,7 @@ import { useCall } from "../context/Callcontext";
 import { resolveAvatarUrl } from "../utils/avatar";
 import { getCallDisplay } from "../utils/callDisplay";
 import { PhoneIcon, VideoIcon, CallDirectionArrow } from "./CallIcons";
+import CallDetailModal from "./CallDetailModal";
 
 function BackIcon() {
   return (
@@ -69,6 +70,9 @@ export default function CallLogsPage() {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("all"); // "all" | "missed"
   const [query, setQuery] = useState("");
+  // Whichever contact's row was tapped — opens the WhatsApp-style "Call
+  // details" screen (their info + full call history) over this page.
+  const [detailUser, setDetailUser] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -182,7 +186,18 @@ export default function CallLogsPage() {
               const username = g.otherUser?.username || "Unknown";
 
               return (
-                <div key={call._id} className={`call-log-item ${missed ? "call-log-missed" : ""}`}>
+                <div
+                  key={call._id}
+                  className={`call-log-item ${missed ? "call-log-missed" : ""}`}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => g.otherUser && setDetailUser(g.otherUser)}
+                  onKeyDown={(e) => {
+                    if ((e.key === "Enter" || e.key === " ") && g.otherUser) {
+                      setDetailUser(g.otherUser);
+                    }
+                  }}
+                >
                   <img
                     src={resolveAvatarUrl(g.otherUser?.avatar)}
                     alt={username}
@@ -204,7 +219,10 @@ export default function CallLogsPage() {
                       className="icon-btn"
                       title="Voice call"
                       disabled={!g.otherUser}
-                      onClick={() => g.otherUser && startCall(g.otherUser, "audio")}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        g.otherUser && startCall(g.otherUser, "audio");
+                      }}
                     >
                       <PhoneIcon />
                     </button>
@@ -213,7 +231,10 @@ export default function CallLogsPage() {
                       className="icon-btn"
                       title="Video call"
                       disabled={!g.otherUser}
-                      onClick={() => g.otherUser && startCall(g.otherUser, "video")}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        g.otherUser && startCall(g.otherUser, "video");
+                      }}
                     >
                       <VideoIcon />
                     </button>
@@ -221,7 +242,10 @@ export default function CallLogsPage() {
                       type="button"
                       className="icon-btn call-log-delete-btn"
                       title="Delete from call history"
-                      onClick={() => handleDeleteCall(call)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteCall(call);
+                      }}
                     >
                       <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <polyline points="3 6 5 6 21 6" />
@@ -245,6 +269,18 @@ export default function CallLogsPage() {
           start one.
         </p>
       </div>
+
+      {detailUser && (
+        <CallDetailModal
+          user={detailUser}
+          myId={user?._id}
+          onStartCall={(contact, type) => {
+            setDetailUser(null);
+            startCall(contact, type);
+          }}
+          onClose={() => setDetailUser(null)}
+        />
+      )}
     </div>
   );
 }

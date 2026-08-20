@@ -3300,7 +3300,7 @@ button.profile-row-danger:disabled {
   gap: 10px;
   padding: 12px 14px;
   border-bottom: 1px solid #f5f5f5;
-  cursor: default;
+  cursor: pointer;
   transition: background 0.12s ease;
 }
 
@@ -3431,7 +3431,143 @@ button.profile-row-danger:disabled {
   color: #667781;
 }
 
+/* ---------- Call detail modal ----------
+   Opens on top of the Calls page when a log row is tapped — WhatsApp's
+   own "Call details" screen: contact info up top, quick call/video
+   buttons, then every past call with that one contact underneath.
+   Reuses .profile-modal's card/header chrome so it feels like the same
+   surface as Contact info rather than a bolted-on new component. */
+.call-detail-modal {
+  width: min(30%, 400px);
+}
+
+.call-detail-body {
+  padding-bottom: 8px;
+}
+
+.call-detail-avatar-wrapper {
+  width: 40%;
+  max-width: 160px;
+  min-width: 100px;
+  aspect-ratio: 1 / 1;
+  border-radius: 50%;
+  overflow: hidden;
+  margin: 28px 0 12px;
+  flex-shrink: 0;
+  border: none;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+  box-shadow: 0 0 0 4px rgba(17, 27, 33, 0.04);
+}
+
+.call-detail-identity {
+  cursor: pointer;
+  padding-bottom: 14px;
+}
+
+.call-detail-actions {
+  display: flex;
+  gap: 32px;
+  padding: 4px 24px 20px;
+}
+
+.call-detail-action-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: none;
+  color: #128c7e;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.call-detail-action-btn svg {
+  width: 44px;
+  height: 44px;
+  padding: 12px;
+  border-radius: 50%;
+  background: #f0f2f1;
+  box-sizing: border-box;
+  transition: background 0.12s ease;
+}
+
+.call-detail-action-btn:hover svg {
+  background: #e5e7e6;
+}
+
+.call-detail-history {
+  width: 100%;
+}
+
+.call-detail-history-title {
+  padding: 14px 24px 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #128c7e;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.call-detail-history .empty-state {
+  padding: 24px;
+}
+
+.call-detail-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 12px 24px;
+  box-sizing: border-box;
+}
+
+.call-detail-row-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: #f0f2f1;
+  color: #54656f;
+}
+
+.call-detail-row-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.call-detail-row-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14.5px;
+  font-weight: 500;
+  color: #111b21;
+}
+
+.call-detail-row-time {
+  font-size: 12.5px;
+  color: #667781;
+}
+
+.call-detail-row.call-log-missed .call-detail-row-title {
+  color: #e05252;
+}
+
 @media (max-width: 860px) {
+  .call-detail-modal {
+    width: min(94vw, 400px);
+  }
+
   .call-logs-panel {
     width: 100%;
     border-right: none;
