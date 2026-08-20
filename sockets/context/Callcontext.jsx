@@ -22,6 +22,19 @@ export const useCall = () => useContext(CallContext);
 const ICE_SERVERS = [
   { urls: "stun:stun.l.google.com:19302" },
   { urls: "stun:stun1.l.google.com:19302" },
+  // Set these in sockets/.env (see README) to add a TURN relay. Without one,
+  // two devices on different networks (e.g. laptop on wifi + phone on
+  // mobile data, or a wifi with client isolation) usually cannot connect
+  // even though STUN lets them "see" each other.
+  ...(import.meta.env.VITE_TURN_URL
+    ? [
+        {
+          urls: import.meta.env.VITE_TURN_URL,
+          username: import.meta.env.VITE_TURN_USERNAME,
+          credential: import.meta.env.VITE_TURN_CREDENTIAL,
+        },
+      ]
+    : []),
 ];
 
 // idle -> outgoing (I called) | incoming (they called me)
@@ -34,6 +47,13 @@ const CALL_STATE = {
   INCOMING: "incoming",
   ONGOING: "ongoing",
 };
+
+function describeMediaError(err) {
+  if (err?.name === "InsecureContextError") return err.message;
+  if (err?.name === "NotAllowedError") return "Camera/microphone permission denied.";
+  if (err?.name === "NotFoundError") return "No camera or microphone was found on this device.";
+  return "Couldn't start the call.";
+}
 
 export function CallProvider({ children }) {
   const socket = useSocket();
@@ -109,6 +129,21 @@ export function CallProvider({ children }) {
   );
 
   const getLocalMedia = useCallback(async (type) => {
+    // On phones (and most modern browsers), camera/mic access is only
+    // exposed on a "secure context" — https://, or http://localhost.
+    // Opening the app via a LAN IP like http://192.168.x.x:5173 on a
+    // phone is NOT secure, so `navigator.mediaDevices` is simply
+    // undefined there and calls fail before any signaling happens.
+    // Surface that clearly instead of letting the next line throw a
+    // confusing "Cannot read properties of undefined".
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      const err = new Error(
+        "Camera/mic access is blocked on this connection. Open the app over HTTPS (or a dev tunnel) on this device — plain http://<ip> only works on the machine it's running on."
+      );
+      err.name = "InsecureContextError";
+      throw err;
+    }
+
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         echoCancellation: true,
@@ -147,11 +182,7 @@ export function CallProvider({ children }) {
         });
       } catch (err) {
         console.error("startCall error:", err);
-        setCallError(
-          err?.name === "NotAllowedError"
-            ? "Camera/microphone permission denied."
-            : "Couldn't start the call."
-        );
+        setCallError(describeMediaError(err));
         resetCallState();
       }
     },
@@ -189,11 +220,7 @@ export function CallProvider({ children }) {
       setCallStartedAt(Date.now());
     } catch (err) {
       console.error("acceptCall error:", err);
-      setCallError(
-        err?.name === "NotAllowedError"
-          ? "Camera/microphone permission denied."
-          : "Couldn't join the call."
-      );
+      setCallError(describeMediaError(err));
       socket.emit("rejectCall", { callerId: pending.from, reason: "error" });
       resetCallState();
     }

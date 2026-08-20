@@ -9,7 +9,7 @@ export const ASSET_BASE_URL = API_URL.replace(/\/api\/?$/, "");
 //  - a relative path like "/uploads/avatars/xyz.jpg" (a local upload)
 // This turns either into something an <img src> can load directly.
 export function resolveAvatarUrl(avatar) {
-  if (!avatar) return "";
+  if (!avatar) return null;
   if (/^https?:\/\//i.test(avatar)) return avatar;
   return `${ASSET_BASE_URL}${avatar}`;
 }

@@ -21,6 +21,8 @@ const allowedOrigins = [
   "http://localhost:5173",
   "https://2x7n90c5-5173.asse.devtunnels.ms",
   "http://192.168.18.79:5173",
+
+  
 ];
 // Socket.IO
 const io = new Server(server, {

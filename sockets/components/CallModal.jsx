@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useCall, CALL_STATE } from "../context/Callcontext";
 import { resolveAvatarUrl } from "../utils/avatar";
 
@@ -104,6 +104,40 @@ export default function CallModal() {
   const remoteAudioRef = useRef(null);
   const [elapsed, setElapsed] = useState(0);
 
+  // Plain useEffect only re-runs when [localStream]/[remoteStream] change —
+  // but these <video> elements are conditionally rendered (they don't exist
+  // until callState becomes ONGOING), and the stream is usually captured
+  // *before* that happens. That left the effect firing while
+  // localVideoRef.current was still null, so the srcObject assignment was
+  // silently dropped and self-view never appeared. Callback refs fire the
+  // moment the node is actually created/attached, so we assign there too —
+  // this covers both "stream arrives after the element exists" (remote,
+  // via the effects below) and "element mounts after the stream already
+  // exists" (local, the bug that was happening here).
+  const setLocalVideoNode = useCallback(
+    (node) => {
+      localVideoRef.current = node;
+      if (node) node.srcObject = localStream || null;
+    },
+    [localStream]
+  );
+
+  const setRemoteVideoNode = useCallback(
+    (node) => {
+      remoteVideoRef.current = node;
+      if (node) node.srcObject = remoteStream || null;
+    },
+    [remoteStream]
+  );
+
+  const setRemoteAudioNode = useCallback(
+    (node) => {
+      remoteAudioRef.current = node;
+      if (node) node.srcObject = remoteStream || null;
+    },
+    [remoteStream]
+  );
+
   useEffect(() => {
     if (localVideoRef.current) {
       localVideoRef.current.srcObject = localStream || null;
@@ -147,12 +181,12 @@ export default function CallModal() {
     <div className="call-overlay">
       {/* Hidden audio sink so voice plays even while the video element (if any)
           is muted/hidden — harmless no-op duplicate for video calls. */}
-      {!isVideo && <audio ref={remoteAudioRef} autoPlay playsInline />}
+      {!isVideo && <audio ref={setRemoteAudioNode} autoPlay playsInline />}
 
       {isVideo && callState === CALL_STATE.ONGOING ? (
         <div className="call-video-stage">
           <video
-            ref={remoteVideoRef}
+            ref={setRemoteVideoNode}
             className="call-remote-video"
             autoPlay
             playsInline
@@ -164,7 +198,7 @@ export default function CallModal() {
             </div>
           )}
           <video
-            ref={localVideoRef}
+            ref={setLocalVideoNode}
             className={`call-local-video ${isCameraOff ? "call-local-video-off" : ""}`}
             autoPlay
             playsInline
