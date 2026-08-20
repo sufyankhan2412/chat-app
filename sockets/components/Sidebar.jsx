@@ -1,9 +1,11 @@
 import React, { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { getContacts, getMessages } from "../api";
 import { useSocket } from "../context/Socketcontext";
 import { useAuth } from "../context/Authcontext";
 import { useProfileModal } from "../context/Profilemodalcontext";
 import { resolveAvatarUrl } from "../utils/avatar";
+import { PhoneIcon } from "./CallIcons";
 import SearchUsers from "../SearchUsers";
 
 // Formats the last-message timestamp the way WhatsApp does in the chat list:
@@ -25,11 +27,22 @@ function formatPreviewTime(dateStr) {
 
 // Attachment messages often have no caption, so the sidebar preview needs a
 // WhatsApp-style fallback label ("📷 Photo") instead of showing a blank line.
-function previewText(lastMessage) {
+function previewText(lastMessage, isOwn) {
   if (!lastMessage) return null;
   // "Delete for everyone" leaves visible evidence — WhatsApp-style italic
   // placeholder — everywhere the message used to show, sidebar included.
   if (lastMessage.deletedForEveryone) return "This message was deleted";
+
+  if (lastMessage.type === "call") {
+    const call = lastMessage.call || {};
+    const icon = call.callType === "video" ? "📹" : "📞";
+    const kind = call.callType === "video" ? "Video" : "Voice";
+    if (call.status !== "completed" && !isOwn) return `${icon} Missed ${kind.toLowerCase()} call`;
+    if (call.status === "declined") return `${icon} Declined call`;
+    if (call.status !== "completed") return `${icon} ${kind} call · No answer`;
+    return `${icon} ${kind} call`;
+  }
+
   if (lastMessage.content) return lastMessage.content;
 
   switch (lastMessage.type) {
@@ -59,6 +72,7 @@ export default function Sidebar({ activeContact, onSelectContact }) {
   const socket = useSocket();
   const { user, logout } = useAuth();
   const { openOwnProfile } = useProfileModal();
+  const navigate = useNavigate();
 
   // Lets the async "delete for me" handler below check the *current*
   // contacts list without re-subscribing the socket effect on every
@@ -158,6 +172,10 @@ useEffect(() => {
       status: message.status,
       sender: message.sender,
       createdAt: message.createdAt,
+      // Needed so previewText() can tell attachment/call messages apart
+      // from plain text ones (a caption-less attachment has no content).
+      type: message.type,
+      call: message.call,
     });
 
     // A message arrived from a contact
@@ -297,6 +315,25 @@ useEffect(() => {
         </button>
       </div>
 
+      <div className="sidebar-nav">
+        <button
+          type="button"
+          className="sidebar-nav-item active"
+          title="Chats"
+        >
+          Chats
+        </button>
+        <button
+          type="button"
+          className="sidebar-nav-item"
+          onClick={() => navigate("/calls")}
+          title="Calls"
+        >
+          <PhoneIcon width="15" height="15" />
+          Calls
+        </button>
+      </div>
+
       <SearchUsers onContactAdded={handleContactAdded} />
 
       <div className="contact-list">
@@ -355,7 +392,7 @@ useEffect(() => {
                             lastMsg?.deletedForEveryone ? " contact-last-message-deleted" : ""
                           }`}
                         >
-                          {lastMsg ? previewText(lastMsg) : "Say hi 👋"}
+                          {lastMsg ? previewText(lastMsg, isOwnLastMsg) : "Say hi 👋"}
                         </span>
                       </>
                     )}

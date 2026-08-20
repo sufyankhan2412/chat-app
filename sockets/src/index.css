@@ -228,6 +228,38 @@ body {
 .logout-btn:hover {
   background: rgba(255, 255, 255, 0.15);
 }
+
+/* ---------- Sidebar nav (Chats / Calls) ---------- */
+.sidebar-nav {
+  display: flex;
+  gap: 4px;
+  padding: 8px 10px 0;
+  border-bottom: 1px solid #eee;
+}
+
+.sidebar-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  background: transparent;
+  color: #667781;
+  font-size: 13.5px;
+  font-weight: 600;
+  padding: 8px 10px 10px;
+  cursor: pointer;
+  border-bottom: 2.5px solid transparent;
+}
+
+.sidebar-nav-item:hover {
+  color: #128c7e;
+}
+
+.sidebar-nav-item.active {
+  color: #128c7e;
+  border-bottom-color: #128c7e;
+}
+
 /* ----------Message Date Separator ---------- */
 .message-date-separator {
   width: 100%;
@@ -1236,6 +1268,61 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+/* ---------- Call log entry inside a chat bubble ---------- */
+.message-call {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 170px;
+  padding: 2px 2px;
+}
+
+.message-call-icon {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: rgba(18, 140, 126, 0.12);
+  color: #128c7e;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.message-call-missed .message-call-icon {
+  background: rgba(224, 82, 82, 0.12);
+  color: #e05252;
+}
+
+.message-call-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.message-call-title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 14px;
+  font-weight: 500;
+  color: #111b21;
+}
+
+.message-call-missed .message-call-title {
+  color: #e05252;
+}
+
+.message-call-subtitle {
+  font-size: 12.5px;
+  color: #667781;
+}
+
+.call-direction-arrow {
+  flex-shrink: 0;
 }
 
 /* ---------- Voice note player ---------- */
@@ -3102,4 +3189,137 @@ button.profile-row-danger:disabled {
     width: 48px;
     height: 48px;
   }
+}
+/* ---------- Call Logs page ---------- */
+.call-logs-page {
+  width: 100%;
+  height: 100vh;
+  background: #f0f2f1;
+  display: flex;
+  flex-direction: column;
+}
+
+.call-logs-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: #075e54;
+  color: #fff;
+  padding: 14px 16px;
+  flex-shrink: 0;
+}
+
+.call-logs-back-btn {
+  color: #fff;
+}
+
+.call-logs-back-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.call-logs-title {
+  font-size: 19px;
+  font-weight: 600;
+}
+
+.call-logs-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 10px 16px;
+  background: #fff;
+  border-bottom: 1px solid #eee;
+  flex-shrink: 0;
+}
+
+.call-logs-tab {
+  border: none;
+  background: #f0f2f1;
+  color: #54656f;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 7px 16px;
+  border-radius: 16px;
+  cursor: pointer;
+}
+
+.call-logs-tab:hover {
+  background: #e5e7e6;
+}
+
+.call-logs-tab.active {
+  background: #128c7e;
+  color: #fff;
+}
+
+.call-logs-list {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.call-log-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  background: #fff;
+  border-bottom: 1px solid #f5f5f5;
+}
+
+.call-log-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.call-log-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: #111b21;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.call-log-count {
+  margin-left: 6px;
+  font-weight: 500;
+  color: #667781;
+}
+
+.call-log-meta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 13px;
+  color: #667781;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.call-log-missed .call-log-meta {
+  color: #e05252;
+}
+
+.call-log-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.call-log-actions .icon-btn {
+  width: 36px;
+  height: 36px;
+  color: #128c7e;
+}
+
+.call-log-delete-btn {
+  color: #8696a0 !important;
+}
+
+.call-logs-list .empty-state {
+  width: 100%;
 }

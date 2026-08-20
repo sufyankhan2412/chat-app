@@ -13,8 +13,9 @@ import Login from "../components/Login";
 import Signup from "../components/Signup";
 import Sidebar from "../components/Sidebar";
 import ChatWindow from "../components/ChatWindow";
-import ProfileModal from "../components/ProfileModal";
+import ProfileModal from "../components/Profilemodal";
 import CallModal from "../components/CallModal";
+import CallLogsPage from "../components/CallLogs";
 
 function SocketProviderWrapper({ children }) {
   const { token, user } = useAuth();
@@ -77,6 +78,14 @@ function AppRoutes() {
         element={
           <PrivateRoute>
             <ChatPage />
+          </PrivateRoute>
+        }
+      />
+      <Route
+        path="/calls"
+        element={
+          <PrivateRoute>
+            <CallLogsPage />
           </PrivateRoute>
         }
       />

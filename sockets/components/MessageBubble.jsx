@@ -1,7 +1,9 @@
 import React from "react";
 import VoicePlayer from "./VoicePlayer";
+import { PhoneIcon, VideoIcon, CallDirectionArrow } from "./CallIcons";
 import { resolveAvatarUrl } from "../utils/avatar";
 import { formatFileSize } from "../utils/formatFileSize";
+import { getCallDisplay } from "../utils/callDisplay";
 
 function formatTime(dateStr) {
   const d = new Date(dateStr);
@@ -66,9 +68,36 @@ function FileTypeIcon({ fileName }) {
   );
 }
 
-function AttachmentContent({ message, onOpenMedia, onMediaLoad }) {
+// WhatsApp-style call-log entry: icon + direction arrow + "Voice/Video
+// call" + duration (or "Missed"/"Declined"/"No answer"). `isOwn` decides
+// both the wording ("Missed" only ever shows to whoever didn't answer)
+// and which way the little arrow points.
+function CallBubbleContent({ call, isOwn }) {
+  const { isVideo, missed, outgoing, title, subtitle } = getCallDisplay(call, isOwn);
+
+  return (
+    <div className={`message-call${missed ? " message-call-missed" : ""}`}>
+      <span className="message-call-icon">
+        {isVideo ? <VideoIcon width="20" height="20" /> : <PhoneIcon width="20" height="20" />}
+      </span>
+      <span className="message-call-info">
+        <span className="message-call-title">
+          <CallDirectionArrow outgoing={outgoing} missed={missed} />
+          {title}
+        </span>
+        <span className="message-call-subtitle">{subtitle}</span>
+      </span>
+    </div>
+  );
+}
+
+function AttachmentContent({ message, isOwn, onOpenMedia, onMediaLoad }) {
   const { type, attachment, content } = message;
   const url = resolveAvatarUrl(attachment?.url);
+
+  if (type === "call") {
+    return <CallBubbleContent call={message.call} isOwn={isOwn} />;
+  }
 
   if (type === "image") {
     return (
@@ -219,12 +248,14 @@ export default function MessageBubble({
             {undoInfo && <InlineUndoButton undoInfo={undoInfo} onUndo={onUndoDelete} />}
           </div>
         ) : (
-          <AttachmentContent message={message} onOpenMedia={onOpenMedia} onMediaLoad={onMediaLoad} />
+          <AttachmentContent message={message} isOwn={isOwn} onOpenMedia={onOpenMedia} onMediaLoad={onMediaLoad} />
         )}
         <span className="message-meta">
           {isStarred && !isDeleted && !isPendingUndo && <span className="message-star-badge">★</span>}
           <span className="message-time">{formatTime(message.createdAt)}</span>
-          {isOwn && !isDeleted && !isPendingUndo && <Ticks status={message.status} />}
+          {isOwn && !isDeleted && !isPendingUndo && message.type !== "call" && (
+            <Ticks status={message.status} />
+          )}
         </span>
       </div>
     </div>

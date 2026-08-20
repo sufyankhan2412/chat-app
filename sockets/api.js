@@ -97,4 +97,12 @@ export const starMessage = (id) => api.post(`/messages/${id}/star`);
 
 export const unstarMessage = (id) => api.post(`/messages/${id}/unstar`);
 
+// Every call I've been a part of (as caller or callee), newest first —
+// powers the dedicated Calls page.
+export const getCallLogs = (params = {}) => api.get("/calls", { params });
+
+// Call history with one specific contact only.
+export const getCallLogsWith = (userId, params = {}) =>
+  api.get(`/calls/${userId}`, { params });
+
 export default api;

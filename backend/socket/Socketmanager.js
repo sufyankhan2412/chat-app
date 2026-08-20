@@ -11,6 +11,14 @@ const onlineUsers = new Map();
 // clean up gracefully if someone's socket drops mid-call.
 const activeCalls = new Map();
 
+// In-memory map of room name (sorted pair, see getRoomName) -> metadata for
+// the call currently ringing/ongoing between those two users. This is what
+// lets us write a single WhatsApp-style call-log Message once the call
+// concludes, no matter which side ends it or why: { callerId, calleeId,
+// callType, answeredAt }. `answeredAt` stays null the whole time the call
+// is only ringing, and is stamped the moment the callee answers.
+const callLogMeta = new Map();
+
 function clearActiveCall(userId) {
   const otherUserId = activeCalls.get(String(userId));
   activeCalls.delete(String(userId));
@@ -35,6 +43,33 @@ function getRoomName(userId, otherUserId) {
 
 function getUserRoomName(userId) {
   return `user_${String(userId)}`;
+}
+
+// Writes one call-log Message (type: "call") and pushes it to both
+// participants live, exactly the way a normal chat message is delivered —
+// `receiveMessage` to the callee's room, `messageSent` to the caller's, so
+// it shows up instantly in an open chat window and updates the sidebar
+// preview on both sides, plus becomes queryable later from GET /api/calls
+// for the dedicated Call Logs page.
+async function logCall(io, { callerId, calleeId, callType, status, startedAt }) {
+  try {
+    const duration =
+      status === "completed" && startedAt
+        ? Math.max(0, Math.round((Date.now() - startedAt) / 1000))
+        : 0;
+
+    const message = await Message.create({
+      sender: callerId,
+      receiver: calleeId,
+      type: "call",
+      call: { callType, status, duration },
+    });
+
+    io.to(getUserRoomName(calleeId)).emit("receiveMessage", message);
+    io.to(getUserRoomName(callerId)).emit("messageSent", message);
+  } catch (err) {
+    console.error("logCall error:", err.message);
+  }
 }
 
 function initSocket(io) {
@@ -235,13 +270,28 @@ try {
       const receiverSocketIds = getReceiverSocketIds(receiverId);
       if (!receiverSocketIds.length) {
         // Callee isn't connected at all — tell the caller right away
-        // instead of leaving them "ringing" forever.
+        // instead of leaving them "ringing" forever. Still worth a
+        // "missed call" log entry, the same way WhatsApp records a call
+        // even if the other side's phone never actually rang.
         socket.emit("callFailed", { reason: "offline" });
+        logCall(io, {
+          callerId: userKey,
+          calleeId: String(receiverId),
+          callType,
+          status: "missed",
+        });
         return;
       }
 
       activeCalls.set(userKey, String(receiverId));
       activeCalls.set(String(receiverId), userKey);
+
+      callLogMeta.set(getRoomName(userId, receiverId), {
+        callerId: userKey,
+        calleeId: String(receiverId),
+        callType,
+        answeredAt: null,
+      });
 
       io.to(getUserRoomName(receiverId)).emit("incomingCall", {
         from: userId,
@@ -253,6 +303,8 @@ try {
     // Callee -> caller: "I accepted" + the WebRTC answer.
     socket.on("answerCall", ({ callerId, answer }) => {
       if (!callerId || !answer) return;
+      const meta = callLogMeta.get(getRoomName(userId, callerId));
+      if (meta) meta.answeredAt = Date.now();
       io.to(getUserRoomName(callerId)).emit("callAnswered", { answer });
     });
 
@@ -268,6 +320,19 @@ try {
     // Callee declines before answering.
     socket.on("rejectCall", ({ callerId, reason }) => {
       clearActiveCall(userId);
+      const roomName = getRoomName(userId, callerId);
+      const meta = callLogMeta.get(roomName);
+      callLogMeta.delete(roomName);
+      if (meta && !meta.answeredAt) {
+        logCall(io, {
+          callerId: meta.callerId,
+          calleeId: meta.calleeId,
+          callType: meta.callType,
+          // "busy" is an auto-decline (already on another call) — that
+          // reads to the caller as a missed call, not a deliberate one.
+          status: reason === "busy" ? "missed" : "declined",
+        });
+      }
       if (!callerId) return;
       io.to(getUserRoomName(callerId)).emit("callRejected", {
         reason: reason || "declined",
@@ -277,13 +342,36 @@ try {
     // Caller hangs up before the callee answers.
     socket.on("cancelCall", ({ receiverId }) => {
       clearActiveCall(userId);
+      const roomName = getRoomName(userId, receiverId);
+      const meta = callLogMeta.get(roomName);
+      callLogMeta.delete(roomName);
+      if (meta && !meta.answeredAt) {
+        logCall(io, {
+          callerId: meta.callerId,
+          calleeId: meta.calleeId,
+          callType: meta.callType,
+          status: "missed",
+        });
+      }
       if (!receiverId) return;
       io.to(getUserRoomName(receiverId)).emit("callCancelled", {});
     });
 
-    // Either side ends an in-progress call.
+    // Either side ends an in-progress (already-answered) call.
     socket.on("endCall", ({ targetId }) => {
       clearActiveCall(userId);
+      const roomName = getRoomName(userId, targetId);
+      const meta = callLogMeta.get(roomName);
+      callLogMeta.delete(roomName);
+      if (meta) {
+        logCall(io, {
+          callerId: meta.callerId,
+          calleeId: meta.calleeId,
+          callType: meta.callType,
+          status: meta.answeredAt ? "completed" : "missed",
+          startedAt: meta.answeredAt,
+        });
+      }
       if (!targetId) return;
       io.to(getUserRoomName(targetId)).emit("callEnded", {});
     });
@@ -310,9 +398,22 @@ if (userSockets.size === 0) {
 
   // If this user dropped mid-call (closed the tab, lost connection,
   // etc.), let their call partner know instead of leaving them stuck
-  // on a frozen video feed.
+  // on a frozen video feed — and still log the call (completed if it
+  // had been answered, missed otherwise) so it doesn't just vanish.
   const otherUserId = clearActiveCall(userKey);
   if (otherUserId) {
+    const roomName = getRoomName(userKey, otherUserId);
+    const meta = callLogMeta.get(roomName);
+    callLogMeta.delete(roomName);
+    if (meta) {
+      logCall(io, {
+        callerId: meta.callerId,
+        calleeId: meta.calleeId,
+        callType: meta.callType,
+        status: meta.answeredAt ? "completed" : "missed",
+        startedAt: meta.answeredAt,
+      });
+    }
     io.to(getUserRoomName(otherUserId)).emit("callEnded", {
       reason: "disconnected",
     });
