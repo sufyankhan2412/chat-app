@@ -49,26 +49,15 @@ function formatLogTime(dateStr) {
   return d.toLocaleDateString([], { day: "2-digit", month: "short" });
 }
 
-// Collapses consecutive calls with the same contact into a single row with
-// a "(n)" count badge — the same grouping WhatsApp's own Calls tab uses,
-// so calling someone back-to-back doesn't flood the list with duplicates.
-function groupCalls(calls, myId) {
-  const groups = [];
-  for (const call of calls) {
-    const senderId = String(call.sender?._id || call.sender);
-    const isOwn = senderId === String(myId);
-    const otherUser = isOwn ? call.receiver : call.sender;
-    const otherId = String(otherUser?._id || otherUser || senderId);
-
-    const last = groups[groups.length - 1];
-    if (last && last.otherId === otherId) {
-      last.count += 1;
-      last.calls.push(call);
-    } else {
-      groups.push({ otherId, otherUser, latest: call, isOwn, count: 1, calls: [call] });
-    }
-  }
-  return groups;
+// Turns a raw call log entry into the shape the list renders — kept as its
+// own step (rather than grouping repeats under one row) so every call shows
+// its own missed/answered status and timestamp, nothing hidden behind a
+// "(n)" counter.
+function toRow(call, myId) {
+  const senderId = String(call.sender?._id || call.sender);
+  const isOwn = senderId === String(myId);
+  const otherUser = isOwn ? call.receiver : call.sender;
+  return { latest: call, otherUser, isOwn };
 }
 
 export default function CallLogsPage() {
@@ -107,20 +96,18 @@ export default function CallLogsPage() {
       }
       return true;
     });
-    const grouped = groupCalls(filtered, user._id);
+    const rows = filtered.map((c) => toRow(c, user._id));
     const q = query.trim().toLowerCase();
-    if (!q) return grouped;
-    return grouped.filter((g) =>
-      (g.otherUser?.username || "").toLowerCase().includes(q)
-    );
+    if (!q) return rows;
+    return rows.filter((r) => (r.otherUser?.username || "").toLowerCase().includes(q));
   }, [calls, filter, user, query]);
 
-  // Removes a whole group from my own call history (mirrors "delete for
+  // Removes a single call from my own call history (mirrors "delete for
   // me" on a regular message — the other participant's copy is untouched).
-  const handleDeleteGroup = async (group) => {
+  const handleDeleteCall = async (call) => {
     try {
-      await Promise.all(group.calls.map((c) => deleteMessage(c._id, false)));
-      setCalls((prev) => prev.filter((c) => !group.calls.some((gc) => gc._id === c._id)));
+      await deleteMessage(call._id, false);
+      setCalls((prev) => prev.filter((c) => c._id !== call._id));
     } catch (err) {
       console.error("Failed to delete call log entry:", err);
     }
@@ -195,17 +182,14 @@ export default function CallLogsPage() {
               const username = g.otherUser?.username || "Unknown";
 
               return (
-                <div key={g.latest._id} className={`call-log-item ${missed ? "call-log-missed" : ""}`}>
+                <div key={call._id} className={`call-log-item ${missed ? "call-log-missed" : ""}`}>
                   <img
                     src={resolveAvatarUrl(g.otherUser?.avatar)}
                     alt={username}
                     className="avatar-md call-log-avatar"
                   />
                   <div className="call-log-info">
-                    <span className="call-log-name">
-                      {username}
-                      {g.count > 1 && <span className="call-log-count">({g.count})</span>}
-                    </span>
+                    <span className="call-log-name">{username}</span>
                     <span className="call-log-meta">
                       <CallDirectionArrow outgoing={outgoing} missed={missed} />
                       {title}
@@ -237,7 +221,7 @@ export default function CallLogsPage() {
                       type="button"
                       className="icon-btn call-log-delete-btn"
                       title="Delete from call history"
-                      onClick={() => handleDeleteGroup(g)}
+                      onClick={() => handleDeleteCall(call)}
                     >
                       <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                         <polyline points="3 6 5 6 21 6" />
