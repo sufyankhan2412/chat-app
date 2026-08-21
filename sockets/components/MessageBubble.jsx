@@ -1,9 +1,10 @@
 import React from "react";
-import VoicePlayer from "./VoicePlayer";
-import { PhoneIcon, VideoIcon, CallDirectionArrow } from "./CallIcons";
+import VoicePlayer from "./Voiceplayer";
+import { PhoneIcon, VideoIcon, CallDirectionArrow } from "./Callicons";
 import { resolveAvatarUrl } from "../utils/avatar";
-import { formatFileSize } from "../utils/formatFileSize";
-import { getCallDisplay } from "../utils/callDisplay";
+import { formatFileSize } from "../utils/Formatfilesize";
+import { getCallDisplay } from "../utils/Calldisplay";
+import { linkifyText } from "../utils/Linkify";
 
 function formatTime(dateStr) {
   const d = new Date(dateStr);
@@ -113,7 +114,7 @@ function AttachmentContent({ message, isOwn, onOpenMedia, onMediaLoad }) {
             onLoad={onMediaLoad}
           />
         </div>
-        {content && <span className="message-content message-caption">{content}</span>}
+        {content && <span className="message-content message-caption">{linkifyText(content)}</span>}
       </>
     );
   }
@@ -134,7 +135,7 @@ function AttachmentContent({ message, isOwn, onOpenMedia, onMediaLoad }) {
             <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
           </span>
         </div>
-        {content && <span className="message-content message-caption">{content}</span>}
+        {content && <span className="message-content message-caption">{linkifyText(content)}</span>}
       </>
     );
   }
@@ -166,7 +167,7 @@ function AttachmentContent({ message, isOwn, onOpenMedia, onMediaLoad }) {
     );
   }
 
-  return <span className="message-content">{content}</span>;
+  return <span className="message-content">{linkifyText(content)}</span>;
 }
 
 // Small, self-contained "Undo" pill shown inline inside a bubble that's

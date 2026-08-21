@@ -97,7 +97,13 @@ export default function GroupCallDetailModal({ roomId, onClose }) {
                       <span className="call-detail-row-time">
                         {p.mode === "video" ? "Joined with video" : "Joined with audio"}
                         {" · "}
-                        {p.leftAt ? formatCallDuration(p.duration) : "Still in call"}
+                        {p.leftAt ? (
+                          formatCallDuration(p.duration)
+                        ) : (
+                          <span className="gc-live-badge">
+                            <span className="gc-live-dot" /> In call
+                          </span>
+                        )}
                       </span>
                     </div>
                   </div>

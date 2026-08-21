@@ -56,7 +56,16 @@ function LinkIcon(props) {
   );
 }
 
-function ParticipantTile({ userId, stream, mode, profile }) {
+function RemoveParticipantIcon(props) {
+  return (
+    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" {...props}>
+      <line x1="6" y1="6" x2="18" y2="18" />
+      <line x1="18" y1="6" x2="6" y2="18" />
+    </svg>
+  );
+}
+
+function ParticipantTile({ userId, stream, mode, profile, isHost, canRemove, onRemove }) {
   const videoRef = useRef(null);
   const audioRef = useRef(null);
 
@@ -86,7 +95,22 @@ function ParticipantTile({ userId, stream, mode, profile }) {
           </div>
         </>
       )}
-      <span className="gc-tile-name">{name}</span>
+      {canRemove && (
+        <button
+          type="button"
+          className="gc-tile-remove-btn"
+          onClick={() => {
+            if (window.confirm(`Remove ${name} from this call?`)) onRemove(userId);
+          }}
+          title={`Remove ${name}`}
+        >
+          <RemoveParticipantIcon />
+        </button>
+      )}
+      <span className="gc-tile-name">
+        {name}
+        {isHost && <span className="gc-tile-host-badge">Host</span>}
+      </span>
     </div>
   );
 }
@@ -100,9 +124,13 @@ export default function GroupCallStage({ onLeave }) {
     peers,
     isMuted,
     isCameraOff,
+    hostId,
+    isHost,
+    callError,
     leaveCall,
     toggleMute,
     toggleCamera,
+    removeParticipant,
   } = useGroupCall();
 
   const localVideoRef = useRef(null);
@@ -131,7 +159,19 @@ export default function GroupCallStage({ onLeave }) {
   // inline by JoinCallPage) or an ongoing 1:1 call being upgraded via
   // "Add people" from anywhere in the app (CallModal triggers the join,
   // but has no dedicated screen of its own to show it on).
-  if (callStatus !== "in-call") return null;
+  if (callStatus !== "in-call") {
+    // Surface why we just left even after the overlay itself is gone (e.g.
+    // the host removed us) — same transient-toast pattern CallModal uses
+    // for its own 1:1 call errors.
+    if (callError) {
+      return (
+        <div className="call-toast" role="status">
+          {callError}
+        </div>
+      );
+    }
+    return null;
+  }
 
   const handleLeave = () => {
     leaveCall();
@@ -157,6 +197,7 @@ export default function GroupCallStage({ onLeave }) {
         <span className="gc-participant-count">
           {totalTiles} {totalTiles === 1 ? "participant" : "participants"}
         </span>
+        {callError && <span className="gc-error-banner">{callError}</span>}
         <button type="button" className="gc-copy-link-btn" onClick={handleCopyLink}>
           <LinkIcon /> {linkCopied ? "Link copied" : "Copy link"}
         </button>
@@ -178,7 +219,10 @@ export default function GroupCallStage({ onLeave }) {
               <div className="gc-self-avatar-dot" />
             </div>
           )}
-          <span className="gc-tile-name">You</span>
+          <span className="gc-tile-name">
+            You
+            {isHost && <span className="gc-tile-host-badge">Host</span>}
+          </span>
         </div>
 
         {peerEntries.map(([peerId, { stream, mode: peerMode }]) => (
@@ -188,6 +232,9 @@ export default function GroupCallStage({ onLeave }) {
             stream={stream}
             mode={peerMode}
             profile={profiles[peerId]}
+            isHost={hostId && String(peerId) === String(hostId)}
+            canRemove={isHost}
+            onRemove={removeParticipant}
           />
         ))}
       </div>

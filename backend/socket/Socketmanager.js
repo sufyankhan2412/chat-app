@@ -498,6 +498,7 @@ try {
           roomId,
           callType: call.callType,
           peers: existingPeers,
+          hostId: String(call.initiator),
         });
 
         socket.to(getGroupCallRoomName(roomId)).emit("peerJoined", {
@@ -527,6 +528,70 @@ try {
         signalType,
         payload,
       });
+    });
+
+    // Host-only: forcibly remove another participant from the room. Only
+    // the person who created this call (Call.initiator) may do this — same
+    // permission model as a Meet/WhatsApp call organizer removing someone.
+    // We tell the removed participant's socket directly (so their own UI
+    // tears down immediately) and also update the room/DB bookkeeping here
+    // ourselves, rather than waiting on their client to call
+    // "leaveCallRoom" back — that keeps everyone else's view correct even
+    // if the removed person's tab is slow, backgrounded, or unresponsive.
+    socket.on("removeParticipant", async ({ roomId, targetUserId }) => {
+      if (!roomId || !targetUserId) return;
+      if (String(targetUserId) === userKey) return;
+
+      try {
+        const call = await Call.findOne({ roomId });
+        if (!call) return;
+        if (String(call.initiator) !== userKey) {
+          socket.emit("groupCallError", {
+            message: "Only the person who started the call can remove someone.",
+          });
+          return;
+        }
+
+        const room = groupCallRooms.get(roomId);
+        const targetKey = String(targetUserId);
+        const targetSocketId = room?.get(targetKey);
+        if (!targetSocketId) return;
+
+        io.to(targetSocketId).emit("removedFromCall", { roomId });
+
+        room.delete(targetKey);
+        const targetEntry = [...call.participants]
+          .reverse()
+          .find((p) => String(p.user) === targetKey && !p.leftAt);
+        if (targetEntry) {
+          targetEntry.leftAt = new Date();
+          targetEntry.duration = Math.max(
+            0,
+            Math.round((targetEntry.leftAt - targetEntry.joinedAt) / 1000)
+          );
+        }
+
+        if (room.size === 0) {
+          call.status = "ended";
+          call.endedAt = new Date();
+          groupCallRooms.delete(roomId);
+        }
+        await call.save();
+
+        io.to(getGroupCallRoomName(roomId)).emit("peerLeft", {
+          roomId,
+          peerId: targetKey,
+        });
+
+        const targetSocket = io.sockets.sockets.get(targetSocketId);
+        if (targetSocket) {
+          targetSocket.leave(getGroupCallRoomName(roomId));
+          targetSocket.data.activeCallRoom = null;
+        }
+      } catch (err) {
+        console.error("removeParticipant error:", err.message);
+        socket.emit("groupCallError", { message: "Couldn't remove that participant." });
+      }
     });
 
     async function leaveGroupCallRoom(roomId) {

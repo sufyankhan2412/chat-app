@@ -7,6 +7,7 @@ import React, {
   useState,
 } from "react";
 import { useSocket } from "./Socketcontext";
+import { useAuth } from "./Authcontext";
 import { createCallLink } from "../api";
 
 const GroupCallContext = createContext(null);
@@ -38,6 +39,7 @@ function describeMediaError(err) {
 
 export function GroupCallProvider({ children }) {
   const socket = useSocket();
+  const { user } = useAuth();
 
   // "idle" -> not in a room. "in-call" -> joined and connected/connecting.
   const [callStatus, setCallStatus] = useState("idle");
@@ -50,6 +52,9 @@ export function GroupCallProvider({ children }) {
   const [isCameraOff, setIsCameraOff] = useState(false);
   const [callError, setCallError] = useState("");
   const [callStartedAt, setCallStartedAt] = useState(null);
+  // Whoever created this call link — only they can remove other
+  // participants (mirrors Meet/WhatsApp's "organizer" permissions).
+  const [hostId, setHostId] = useState(null);
 
   const localStreamRef = useRef(null);
   const roomIdRef = useRef(null);
@@ -93,6 +98,7 @@ export function GroupCallProvider({ children }) {
     setIsMuted(false);
     setIsCameraOff(false);
     setCallStartedAt(null);
+    setHostId(null);
   }, []);
 
   const getLocalMedia = useCallback(async (wantVideo) => {
@@ -195,6 +201,17 @@ export function GroupCallProvider({ children }) {
     resetAll();
   }, [socket, resetAll]);
 
+  // Host-only: force another participant out of the call. Gated again on
+  // the client (isHost) purely for UI purposes — the server independently
+  // checks that I'm actually Call.initiator before honoring this.
+  const removeParticipant = useCallback(
+    (peerId) => {
+      if (!socket || !roomIdRef.current) return;
+      socket.emit("removeParticipant", { roomId: roomIdRef.current, targetUserId: peerId });
+    },
+    [socket]
+  );
+
   const toggleMute = useCallback(() => {
     if (!localStreamRef.current) return;
     const next = !isMuted;
@@ -213,7 +230,8 @@ export function GroupCallProvider({ children }) {
   useEffect(() => {
     if (!socket) return;
 
-    const onGroupCallJoined = async ({ peers: existingPeers }) => {
+    const onGroupCallJoined = async ({ peers: existingPeers, hostId: joinedHostId }) => {
+      setHostId(joinedHostId || null);
       // I just joined — I offer to everyone who was already in the room.
       for (const peerId of existingPeers) {
         try {
@@ -282,11 +300,20 @@ export function GroupCallProvider({ children }) {
       resetAll();
     };
 
+    // The host removed me — the server has already torn down its side of
+    // the room, so just tear down our own media/peers and surface why,
+    // rather than sitting on a call the host no longer wants us in.
+    const onRemovedFromCall = () => {
+      setCallError("The host removed you from this call.");
+      resetAll();
+    };
+
     socket.on("groupCallJoined", onGroupCallJoined);
     socket.on("peerJoined", onPeerJoined);
     socket.on("callSignal", onCallSignal);
     socket.on("peerLeft", onPeerLeft);
     socket.on("groupCallError", onGroupCallError);
+    socket.on("removedFromCall", onRemovedFromCall);
 
     return () => {
       socket.off("groupCallJoined", onGroupCallJoined);
@@ -294,6 +321,7 @@ export function GroupCallProvider({ children }) {
       socket.off("callSignal", onCallSignal);
       socket.off("peerLeft", onPeerLeft);
       socket.off("groupCallError", onGroupCallError);
+      socket.off("removedFromCall", onRemovedFromCall);
     };
   }, [socket, getOrCreatePeerConnection, cleanupPeer, resetAll]);
 
@@ -325,11 +353,14 @@ export function GroupCallProvider({ children }) {
     isCameraOff,
     callError,
     callStartedAt,
+    hostId,
+    isHost: Boolean(user?._id && hostId && String(user._id) === String(hostId)),
     generateCallLink,
     joinCall,
     leaveCall,
     toggleMute,
     toggleCamera,
+    removeParticipant,
   };
 
   return <GroupCallContext.Provider value={value}>{children}</GroupCallContext.Provider>;
