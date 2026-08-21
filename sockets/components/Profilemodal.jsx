@@ -13,8 +13,8 @@ import {
 } from "../api";
 import { resolveAvatarUrl } from "../utils/avatar";
 import { formatLastSeen } from "../utils/formatLastSeen";
-import BlockedContacts from "./BlockedContacts";
-import MediaGallery from "./MediaGallery";
+import BlockedContacts from "./Blockedcontacts";
+import MediaGallery from "./Mediagallery";
 import StarredMessages from "./StarredMessages";
 
 // WhatsApp's disappearing-message presets, in milliseconds.

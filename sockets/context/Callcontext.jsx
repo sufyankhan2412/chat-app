@@ -68,6 +68,12 @@ export function CallProvider({ children }) {
   const [isCameraOff, setIsCameraOff] = useState(false);
   const [callError, setCallError] = useState("");
   const [callStartedAt, setCallStartedAt] = useState(null);
+  // Set once the other side (or I) successfully turn this 1:1 call into a
+  // link-based group call — { roomId, callType, link }. CallModal watches
+  // this to hand off into GroupCallContext automatically, for both people,
+  // without either of them needing to click anything else.
+  const [groupUpgrade, setGroupUpgrade] = useState(null);
+  const [addingPeople, setAddingPeople] = useState(false);
 
   const pcRef = useRef(null);
   const localStreamRef = useRef(null);
@@ -267,6 +273,20 @@ export function CallProvider({ children }) {
     setIsCameraOff(nextOff);
   }, [isCameraOff]);
 
+  // ---- "Add people" — turn this ongoing 1:1 call into a group call ----
+  // Lives in the call interface itself (CallModal renders the button),
+  // which is exactly where it needs to be: the two people already
+  // talking are the ones deciding to bring someone else in. Server does
+  // all the real work (logs this call as completed, creates the new
+  // room) and pushes "callUpgraded" back to both of us.
+  const requestAddPeople = useCallback(() => {
+    if (!socket || callState !== CALL_STATE.ONGOING || !remoteUser?._id) return;
+    setAddingPeople(true);
+    socket.emit("upgradeCallToGroup", { targetId: remoteUser._id, callType });
+  }, [socket, callState, remoteUser, callType]);
+
+  const clearGroupUpgrade = useCallback(() => setGroupUpgrade(null), []);
+
   // ---- Socket listeners ----
   useEffect(() => {
     if (!socket) return;
@@ -337,6 +357,24 @@ export function CallProvider({ children }) {
       resetCallState();
     };
 
+    // The call I'm on (or the ringing offer I'm mid-setup on) just got
+    // turned into a group call — by me clicking "Add people", or by the
+    // other side doing it. Either way I hand off into the group room the
+    // same way: stop the 1:1 media/connection, let CallModal pick up
+    // `groupUpgrade` and join via GroupCallContext.
+    const onCallUpgraded = ({ roomId, callType: upgradedType, link }) => {
+      resetCallState();
+      setAddingPeople(false);
+      setGroupUpgrade({ roomId, callType: upgradedType, link });
+    };
+
+    const onGroupCallError = ({ message }) => {
+      if (addingPeople) {
+        setAddingPeople(false);
+        setCallError(message || "Couldn't add people to this call.");
+      }
+    };
+
     socket.on("incomingCall", onIncomingCall);
     socket.on("callAnswered", onCallAnswered);
     socket.on("iceCandidate", onIceCandidate);
@@ -344,6 +382,8 @@ export function CallProvider({ children }) {
     socket.on("callCancelled", onCallCancelled);
     socket.on("callEnded", onCallEnded);
     socket.on("callFailed", onCallFailed);
+    socket.on("callUpgraded", onCallUpgraded);
+    socket.on("groupCallError", onGroupCallError);
 
     return () => {
       socket.off("incomingCall", onIncomingCall);
@@ -353,9 +393,11 @@ export function CallProvider({ children }) {
       socket.off("callCancelled", onCallCancelled);
       socket.off("callEnded", onCallEnded);
       socket.off("callFailed", onCallFailed);
+      socket.off("callUpgraded", onCallUpgraded);
+      socket.off("groupCallError", onGroupCallError);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [socket, callState, resetCallState]);
+  }, [socket, callState, resetCallState, addingPeople]);
 
   // Auto-clear a transient error banner after a few seconds.
   useEffect(() => {
@@ -388,6 +430,10 @@ export function CallProvider({ children }) {
     endCall,
     toggleMute,
     toggleCamera,
+    groupUpgrade,
+    clearGroupUpgrade,
+    requestAddPeople,
+    addingPeople,
   };
 
   return <CallContext.Provider value={value}>{children}</CallContext.Provider>;

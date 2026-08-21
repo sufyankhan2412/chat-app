@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useCall, CALL_STATE } from "../context/Callcontext";
+import { useGroupCall } from "../context/Groupcallcontext";
 import { resolveAvatarUrl } from "../utils/avatar";
 
 // Simple line-style call icons drawn to match the app's existing icon set
@@ -71,6 +72,17 @@ function CameraOffIcon(props) {
   );
 }
 
+function AddPersonIcon(props) {
+  return (
+    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+      <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+      <circle cx="8.5" cy="7" r="4" />
+      <line x1="20" y1="8" x2="20" y2="14" />
+      <line x1="23" y1="11" x2="17" y2="11" />
+    </svg>
+  );
+}
+
 function formatDuration(ms) {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
   const h = Math.floor(totalSeconds / 3600);
@@ -97,7 +109,12 @@ export default function CallModal() {
     endCall,
     toggleMute,
     toggleCamera,
+    groupUpgrade,
+    clearGroupUpgrade,
+    requestAddPeople,
+    addingPeople,
   } = useCall();
+  const groupCall = useGroupCall();
 
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
@@ -162,7 +179,35 @@ export default function CallModal() {
     return () => clearInterval(id);
   }, [callState, callStartedAt]);
 
+  // Hand-off: this 1:1 call was just turned into a group call (by me or
+  // the other side clicking "Add people"). Join the new room via
+  // GroupCallContext — the global <GroupCallStage/> overlay takes it from
+  // here, so this component's own job is just to kick that off once and
+  // get out of the way.
+  useEffect(() => {
+    if (!groupUpgrade) return;
+    let cancelled = false;
+    (async () => {
+      await groupCall.joinCall(groupUpgrade.roomId, groupUpgrade.callType);
+      if (!cancelled) clearGroupUpgrade();
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groupUpgrade]);
+
   if (callState === CALL_STATE.IDLE) {
+    // Mid-handoff into the group call — GroupCallStage isn't mounted yet
+    // (still requesting media / joining the room), so show a brief
+    // transitional state instead of nothing.
+    if (groupUpgrade) {
+      return (
+        <div className="call-overlay call-overlay-transitional">
+          <p>Adding people…</p>
+        </div>
+      );
+    }
     // Still show a transient error toast (e.g. "they're offline") even
     // once we're back to idle.
     if (!callError) return null;
@@ -221,6 +266,9 @@ export default function CallModal() {
             `Incoming ${isVideo ? "video" : "voice"} call…`}
           {callState === CALL_STATE.ONGOING && formatDuration(elapsed)}
         </span>
+        {callState === CALL_STATE.ONGOING && callError && (
+          <span className="call-inline-error">{callError}</span>
+        )}
       </div>
 
       <div className="call-controls">
@@ -263,6 +311,17 @@ export default function CallModal() {
                 title={isCameraOff ? "Turn camera on" : "Turn camera off"}
               >
                 {isCameraOff ? <CameraOffIcon /> : <CameraIcon />}
+              </button>
+            )}
+            {callState === CALL_STATE.ONGOING && (
+              <button
+                type="button"
+                className="call-btn call-btn-secondary"
+                onClick={requestAddPeople}
+                disabled={addingPeople}
+                title="Add people (generates a shareable call link)"
+              >
+                <AddPersonIcon />
               </button>
             )}
             <button

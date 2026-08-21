@@ -8,22 +8,31 @@ import {
 import { AuthProvider, useAuth } from "../context/Authcontext";
 import { SocketProvider } from "../context/Socketcontext";
 import { CallProvider } from "../context/Callcontext";
+import { GroupCallProvider } from "../context/Groupcallcontext";
 import { ProfileModalProvider } from "../context/Profilemodalcontext";
 import Login from "../components/Login";
 import Signup from "../components/Signup";
 import Sidebar from "../components/Sidebar";
-import ChatWindow from "../components/ChatWindow";
+import ChatWindow from "../components/Chatwindow";
 import ProfileModal from "../components/Profilemodal";
 import CallModal from "../components/CallModal";
-import CallLogsPage from "../components/CallLogs";
+import GroupCallStage from "../components/Groupcallstage"
+import CallLogsPage from "../components/Calllogs";
+import JoinCallPage from "../components/Joincallpage"
 
 function SocketProviderWrapper({ children }) {
   const { token, user } = useAuth();
   return (
     <SocketProvider token={token} user={user}>
       <CallProvider>
-        {children}
-        <CallModal />
+        <GroupCallProvider>
+          {children}
+          <CallModal />
+          {/* Mounted globally (not just on /call/:roomId) because a group
+              call can also start mid-conversation via CallModal's "Add
+              people" button, from any page in the app. */}
+          <GroupCallStage />
+        </GroupCallProvider>
       </CallProvider>
     </SocketProvider>
   );
@@ -98,6 +107,18 @@ function AppRoutes() {
         element={
           <PrivateRoute>
             <CallsPage />
+          </PrivateRoute>
+        }
+      />
+      {/* Link-based call join screen — anyone with the link needs an
+          account and to be logged in (same as every other page here), but
+          NOT to be a contact/friend of the caller — this route is the
+          whole point of the shareable link. */}
+      <Route
+        path="/call/:roomId"
+        element={
+          <PrivateRoute>
+            <JoinCallPage />
           </PrivateRoute>
         }
       />

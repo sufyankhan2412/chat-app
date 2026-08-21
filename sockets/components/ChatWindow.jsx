@@ -5,9 +5,9 @@ import { useAuth } from "../context/Authcontext";
 import { useCall } from "../context/Callcontext";
 import { useProfileModal } from "../context/Profilemodalcontext";
 import { resolveAvatarUrl } from "../utils/avatar";
-import { formatFileSize, formatDuration } from "../utils/formatFileSize";
+import { formatFileSize, formatDuration } from "../utils/Formatfilesize";
 import MessageBubble from "./MessageBubble";
-import MediaViewer from "./MediaViewer";
+import MediaViewer from "./Mediaviewer";
 import { formatLastSeen } from "../utils/formatLastSeen";
 import {
   getMessageDateLabel,

@@ -1,12 +1,15 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { getCallLogs, deleteMessage } from "../api";
+import { getCallLogs, deleteMessage, deleteGroupCallLog } from "../api";
 import { useAuth } from "../context/Authcontext";
 import { useCall } from "../context/Callcontext";
 import { resolveAvatarUrl } from "../utils/avatar";
-import { getCallDisplay } from "../utils/callDisplay";
-import { PhoneIcon, VideoIcon, CallDirectionArrow } from "./CallIcons";
-import CallDetailModal from "./CallDetailModal";
+import { getCallDisplay } from "../utils/Calldisplay";
+import { formatCallDuration } from "../../backend/formatCallDuration";
+import { PhoneIcon, VideoIcon, CallDirectionArrow } from "./Callicons";
+import CallDetailModal from "./Calldetailmodal";
+import GroupCallDetailModal from "./GroupCallDetailModal";
+import NewCallModal from "./NewCallModal";
 
 function BackIcon() {
   return (
@@ -30,6 +33,26 @@ function CallsGlyph() {
   return (
     <svg viewBox="0 0 24 24" width="72" height="72" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
       <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.362 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.338 1.85.573 2.81.7A2 2 0 0 1 22 16.92z" />
+    </svg>
+  );
+}
+
+function NewCallGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="12" y1="5" x2="12" y2="19" />
+      <line x1="5" y1="12" x2="19" y2="12" />
+    </svg>
+  );
+}
+
+function GroupCallGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+      <circle cx="9" cy="7" r="4" />
+      <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+      <path d="M16 3.13a4 4 0 0 1 0 7.75" />
     </svg>
   );
 }
@@ -58,7 +81,23 @@ function toRow(call, myId) {
   const senderId = String(call.sender?._id || call.sender);
   const isOwn = senderId === String(myId);
   const otherUser = isOwn ? call.receiver : call.sender;
-  return { latest: call, otherUser, isOwn };
+  return { entryType: "direct", latest: call, otherUser, isOwn };
+}
+
+// A group-call row shows every other attendee by name (WhatsApp's own
+// group-call rows do the same — "You, Alex, Sam" style) plus how long
+// *this* viewer personally stayed, since that's the one number that's
+// different for every attendee even though everyone's looking at the same
+// underlying log.
+function toGroupRow(call, myId) {
+  const others = call.participants.filter(
+    (p) => String(p.user?._id || p.user) !== String(myId)
+  );
+  const mine = call.participants.find(
+    (p) => String(p.user?._id || p.user) === String(myId)
+  );
+  const names = others.map((p) => p.user?.username || "Unknown");
+  return { entryType: "group", latest: call, others, names, myDuration: mine?.duration || 0 };
 }
 
 export default function CallLogsPage() {
@@ -73,6 +112,10 @@ export default function CallLogsPage() {
   // Whichever contact's row was tapped — opens the WhatsApp-style "Call
   // details" screen (their info + full call history) over this page.
   const [detailUser, setDetailUser] = useState(null);
+  // roomId of a group-call row that was tapped — opens the group call's
+  // shared log (every participant + their own duration).
+  const [detailRoomId, setDetailRoomId] = useState(null);
+  const [showNewCall, setShowNewCall] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -95,15 +138,26 @@ export default function CallLogsPage() {
     if (!user) return [];
     const filtered = calls.filter((c) => {
       if (filter === "missed") {
+        // Group calls don't have a "missed" state (you either joined or
+        // you didn't, and if you didn't there's no log entry for you at
+        // all) — the Missed tab only ever concerns 1:1 calls.
+        if (c.entryType === "group") return false;
         const isOwn = String(c.sender?._id || c.sender) === String(user._id);
         if (c.call?.status === "completed" || isOwn) return false;
       }
       return true;
     });
-    const rows = filtered.map((c) => toRow(c, user._id));
+    const rows = filtered.map((c) =>
+      c.entryType === "group" ? toGroupRow(c, user._id) : toRow(c, user._id)
+    );
     const q = query.trim().toLowerCase();
     if (!q) return rows;
-    return rows.filter((r) => (r.otherUser?.username || "").toLowerCase().includes(q));
+    return rows.filter((r) => {
+      if (r.entryType === "group") {
+        return r.names.some((n) => n.toLowerCase().includes(q));
+      }
+      return (r.otherUser?.username || "").toLowerCase().includes(q);
+    });
   }, [calls, filter, user, query]);
 
   // Removes a single call from my own call history (mirrors "delete for
@@ -114,6 +168,16 @@ export default function CallLogsPage() {
       setCalls((prev) => prev.filter((c) => c._id !== call._id));
     } catch (err) {
       console.error("Failed to delete call log entry:", err);
+    }
+  };
+
+  // Same "delete for me" idea, for a group-call log row.
+  const handleDeleteGroupCall = async (call) => {
+    try {
+      await deleteGroupCallLog(call.roomId);
+      setCalls((prev) => prev.filter((c) => c.roomId !== call.roomId));
+    } catch (err) {
+      console.error("Failed to delete group call log entry:", err);
     }
   };
 
@@ -130,6 +194,14 @@ export default function CallLogsPage() {
             <BackIcon />
           </button>
           <span className="call-logs-title">Calls</span>
+          <button
+            type="button"
+            className="icon-btn call-logs-new-btn"
+            onClick={() => setShowNewCall(true)}
+            title="New call"
+          >
+            <NewCallGlyph />
+          </button>
         </div>
 
         <div className="call-logs-search">
@@ -178,6 +250,60 @@ export default function CallLogsPage() {
 
           {!loading &&
             groups.map((g) => {
+              if (g.entryType === "group") {
+                const call = g.latest;
+                const namesLabel =
+                  g.names.length === 0
+                    ? "Just you"
+                    : g.names.length <= 2
+                    ? g.names.join(", ")
+                    : `${g.names.slice(0, 2).join(", ")} +${g.names.length - 2}`;
+
+                return (
+                  <div
+                    key={call.roomId}
+                    className="call-log-item"
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => setDetailRoomId(call.roomId)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") setDetailRoomId(call.roomId);
+                    }}
+                  >
+                    <span className="call-log-avatar call-log-group-icon">
+                      <GroupCallGlyph />
+                    </span>
+                    <div className="call-log-info">
+                      <span className="call-log-name">{namesLabel}</span>
+                      <span className="call-log-meta">
+                        {call.callType === "video" ? <VideoIcon width="14" height="14" /> : <PhoneIcon width="14" height="14" />}
+                        {call.callType === "video" ? "Video call" : "Voice call"}
+                        {" · "}
+                        {formatCallDuration(g.myDuration)}
+                        {" · "}
+                        {formatLogTime(call.createdAt)}
+                      </span>
+                    </div>
+                    <div className="call-log-actions">
+                      <button
+                        type="button"
+                        className="icon-btn call-log-delete-btn"
+                        title="Delete from call history"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteGroupCall(call);
+                        }}
+                      >
+                        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <polyline points="3 6 5 6 21 6" />
+                          <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+                );
+              }
+
               const call = g.latest;
               const { isVideo, missed, outgoing, title, subtitle } = getCallDisplay(
                 call.call,
@@ -281,6 +407,12 @@ export default function CallLogsPage() {
           onClose={() => setDetailUser(null)}
         />
       )}
+
+      {detailRoomId && (
+        <GroupCallDetailModal roomId={detailRoomId} onClose={() => setDetailRoomId(null)} />
+      )}
+
+      {showNewCall && <NewCallModal onClose={() => setShowNewCall(false)} />}
     </div>
   );
 }

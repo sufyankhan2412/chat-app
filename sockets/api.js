@@ -105,4 +105,23 @@ export const getCallLogs = (params = {}) => api.get("/calls", { params });
 export const getCallLogsWith = (userId, params = {}) =>
   api.get(`/calls/${userId}`, { params });
 
+// ---- Link-based (group) calls ----
+
+// Generates a new joinable call link. Returns { roomId, callType, link }.
+// Creating this does NOT create a group/contact/chat — it's a bare,
+// disposable room that only the resulting call log survives.
+export const createCallLink = (callType = "video") =>
+  api.post("/calls/link", { callType });
+
+// Preview info for the join screen (who started it, audio/video, still
+// live) before actually joining the room.
+export const getCallRoomInfo = (roomId) => api.get(`/calls/room/${roomId}`);
+
+// Full participant-by-participant log for one group call. 403s if I
+// wasn't actually a participant.
+export const getGroupCallLog = (roomId) => api.get(`/calls/group/${roomId}`);
+
+// "Delete for me" on a group-call log entry.
+export const deleteGroupCallLog = (roomId) => api.delete(`/calls/group/${roomId}`);
+
 export default api;

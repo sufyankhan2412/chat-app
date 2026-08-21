@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { getMedia } from "../api";
 import { resolveAvatarUrl } from "../utils/avatar";
-import { formatFileSize } from "../utils/formatFileSize";
-import MediaViewer from "./MediaViewer";
+import { formatFileSize } from "../utils/Formatfilesize";
+import MediaViewer from "./Mediaviewer";
 
 const TABS = [
   { key: "media", label: "Media" },

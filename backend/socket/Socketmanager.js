@@ -1,7 +1,9 @@
 const jwt = require("jsonwebtoken");
+const crypto = require("crypto");
 const User = require("../models/User");
 const Message = require("../models/Message");
 const Contact = require("../models/Contact");
+const Call = require("../models/Call");
 
 // In-memory map of userId -> Set<socketId> for currently connected users
 const onlineUsers = new Map();
@@ -10,6 +12,18 @@ const onlineUsers = new Map();
 // call with (covers both "ringing" and "connected" states). Used only to
 // clean up gracefully if someone's socket drops mid-call.
 const activeCalls = new Map();
+
+// In-memory map of roomId -> Map<userId, socketId> for link-based group
+// calls currently in progress. This is what makes "who else is in the
+// room right now" a cheap lookup instead of a DB query on every join, and
+// is exactly mirrored (join/leave) into the persisted Call document's
+// `participants` array so the log survives after the room empties and
+// this map entry is thrown away.
+const groupCallRooms = new Map();
+
+function getGroupCallRoomName(roomId) {
+  return `group_call_${roomId}`;
+}
 
 // In-memory map of room name (sorted pair, see getRoomName) -> metadata for
 // the call currently ringing/ongoing between those two users. This is what
@@ -376,6 +390,191 @@ try {
       io.to(getUserRoomName(targetId)).emit("callEnded", {});
     });
 
+    // ---- Upgrade an ongoing 1:1 call into a link-based group call ----
+    // This is the "Add people" button inside the live call screen — the
+    // whole reason it needs to be reachable from *there* rather than only
+    // from the Calls list is that the two people already talking are the
+    // ones who decide, mid-call, to bring someone else in. Either side can
+    // trigger it. The current call is logged exactly as if it had just
+    // ended normally (real elapsed duration, status "completed"), and a
+    // fresh Call room is created — both participants are handed the same
+    // roomId and immediately become the first two members of that room,
+    // with its link ready to hand to whoever they want to add.
+    socket.on("upgradeCallToGroup", async ({ targetId, callType }) => {
+      if (!targetId) return;
+      const roomName = getRoomName(userId, targetId);
+      const meta = callLogMeta.get(roomName);
+
+      if (!meta || !meta.answeredAt) {
+        socket.emit("groupCallError", {
+          message: "You can only add people once the call is connected.",
+        });
+        return;
+      }
+
+      try {
+        callLogMeta.delete(roomName);
+        clearActiveCall(userId);
+
+        await logCall(io, {
+          callerId: meta.callerId,
+          calleeId: meta.calleeId,
+          callType: meta.callType,
+          status: "completed",
+          startedAt: meta.answeredAt,
+        });
+
+        const roomId = crypto.randomUUID();
+        const call = await Call.create({
+          roomId,
+          initiator: userId,
+          callType: callType || meta.callType,
+          status: "ongoing",
+          participants: [],
+        });
+
+        const frontendUrl = process.env.CLIENT_URL || "http://localhost:5173";
+        const payload = {
+          roomId: call.roomId,
+          callType: call.callType,
+          link: `${frontendUrl}/call/${call.roomId}`,
+        };
+
+        // Both sides get the same payload and independently join the new
+        // room client-side (see GroupCallContext's "callUpgraded" listener)
+        // — neither has to click the link themselves, only anyone new
+        // being invited does.
+        io.to(getUserRoomName(userId)).emit("callUpgraded", payload);
+        io.to(getUserRoomName(targetId)).emit("callUpgraded", payload);
+      } catch (err) {
+        console.error("upgradeCallToGroup error:", err.message);
+        socket.emit("groupCallError", { message: "Couldn't add people to this call." });
+      }
+    });
+
+    // ---- Group / link-based calls (N-way, mesh WebRTC) ----
+    // The link itself (roomId) is created over REST (POST /api/calls/link)
+    // since that needs a DB write and a response before anyone joins.
+    // Everything from here on — actually entering the room, exchanging
+    // WebRTC signaling with every other participant, and leaving — happens
+    // over sockets, same pattern as the 1:1 flow above. The server still
+    // never touches media, only relays SDP/ICE, now to a list of peers
+    // instead of just one.
+
+    // Client -> server: "I'm joining this room" with the mode they picked
+    // (audio-only or with camera) on the join screen.
+    socket.on("joinCallRoom", async ({ roomId, mode = "video" }) => {
+      if (!roomId) return;
+
+      try {
+        const call = await Call.findOne({ roomId });
+        if (!call || call.status === "ended") {
+          socket.emit("groupCallError", { message: "This call link is invalid or has ended." });
+          return;
+        }
+
+        if (!groupCallRooms.has(roomId)) {
+          groupCallRooms.set(roomId, new Map());
+        }
+        const room = groupCallRooms.get(roomId);
+
+        // Existing peers, sent back to the joiner so *they* initiate the
+        // offer to each one already in the room (new peer always offers to
+        // existing peers — avoids both sides racing to create an offer).
+        const existingPeers = Array.from(room.entries()).map(([uid]) => uid);
+
+        room.set(userKey, socket.id);
+        socket.join(getGroupCallRoomName(roomId));
+        socket.data.activeCallRoom = roomId;
+
+        call.participants.push({
+          user: userId,
+          mode,
+          joinedAt: new Date(),
+        });
+        await call.save();
+
+        socket.emit("groupCallJoined", {
+          roomId,
+          callType: call.callType,
+          peers: existingPeers,
+        });
+
+        socket.to(getGroupCallRoomName(roomId)).emit("peerJoined", {
+          roomId,
+          peerId: userId,
+          mode,
+        });
+      } catch (err) {
+        console.error("joinCallRoom error:", err.message);
+        socket.emit("groupCallError", { message: "Couldn't join the call." });
+      }
+    });
+
+    // Relay a WebRTC offer/answer/ICE candidate to one specific peer in the
+    // room. `signalType` is "offer" | "answer" | "ice" — kept generic
+    // (rather than three separate events) since the payload just passes
+    // through untouched either way.
+    socket.on("callSignal", ({ roomId, targetUserId, signalType, payload }) => {
+      if (!roomId || !targetUserId || !signalType) return;
+      const room = groupCallRooms.get(roomId);
+      const targetSocketId = room?.get(String(targetUserId));
+      if (!targetSocketId) return;
+
+      io.to(targetSocketId).emit("callSignal", {
+        roomId,
+        fromUserId: userId,
+        signalType,
+        payload,
+      });
+    });
+
+    async function leaveGroupCallRoom(roomId) {
+      const room = groupCallRooms.get(roomId);
+      if (!room || !room.has(userKey)) return;
+
+      room.delete(userKey);
+      socket.leave(getGroupCallRoomName(roomId));
+      socket.data.activeCallRoom = null;
+
+      try {
+        const call = await Call.findOne({ roomId });
+        if (call) {
+          const entry = [...call.participants]
+            .reverse()
+            .find((p) => String(p.user) === userKey && !p.leftAt);
+          if (entry) {
+            entry.leftAt = new Date();
+            entry.duration = Math.max(
+              0,
+              Math.round((entry.leftAt - entry.joinedAt) / 1000)
+            );
+          }
+
+          // Last person out seals the log — no room to re-enter, no
+          // lingering "ongoing" call left behind.
+          if (room.size === 0) {
+            call.status = "ended";
+            call.endedAt = new Date();
+            groupCallRooms.delete(roomId);
+          }
+
+          await call.save();
+        }
+      } catch (err) {
+        console.error("leaveGroupCallRoom error:", err.message);
+      }
+
+      socket.to(getGroupCallRoomName(roomId)).emit("peerLeft", {
+        roomId,
+        peerId: userId,
+      });
+    }
+
+    socket.on("leaveCallRoom", ({ roomId }) => {
+      if (roomId) leaveGroupCallRoom(roomId);
+    });
+
     // ---- Disconnect ----
     socket.on("disconnect", async () => {
       const userKey = String(userId);
@@ -417,6 +616,12 @@ if (userSockets.size === 0) {
     io.to(getUserRoomName(otherUserId)).emit("callEnded", {
       reason: "disconnected",
     });
+  }
+
+  // Same cleanup for a dropped group call — records leftAt/duration and
+  // seals the log if that was the last person in the room.
+  if (socket.data.activeCallRoom) {
+    await leaveGroupCallRoom(socket.data.activeCallRoom);
   }
 }
       }

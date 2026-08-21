@@ -3,8 +3,8 @@ import { getCallLogsWith } from "../api";
 import { useProfileModal } from "../context/Profilemodalcontext";
 import { resolveAvatarUrl } from "../utils/avatar";
 import { formatLastSeen } from "../utils/formatLastSeen";
-import { getCallDisplay } from "../utils/callDisplay";
-import { PhoneIcon, VideoIcon, CallDirectionArrow } from "./CallIcons";
+import { getCallDisplay } from "../utils/Calldisplay";
+import { PhoneIcon, VideoIcon, CallDirectionArrow } from "./Callicons";
 
 // Full date + time, e.g. "20 Aug 2026, 10:32 AM" — this is the detail
 // screen, so (unlike the list's relative "Yesterday" shorthand) every
