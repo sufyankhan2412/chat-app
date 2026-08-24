@@ -56,6 +56,14 @@ export function GroupCallProvider({ children }) {
   // participants (mirrors Meet/WhatsApp's "organizer" permissions).
   const [hostId, setHostId] = useState(null);
 
+  // In-call chat — lives purely in memory for the duration of the call
+  // (mirrors Google Meet's in-call messages). Never sent to the backend
+  // for persistence, never written to any database, and wiped the moment
+  // the call ends (see resetAll below) — a page refresh or leaving the
+  // call loses it just like Meet's does.
+  const [chatMessages, setChatMessages] = useState([]);
+  const [unreadChatCount, setUnreadChatCount] = useState(0);
+
   const localStreamRef = useRef(null);
   const roomIdRef = useRef(null);
   const modeRef = useRef("video");
@@ -99,6 +107,10 @@ export function GroupCallProvider({ children }) {
     setIsCameraOff(false);
     setCallStartedAt(null);
     setHostId(null);
+    // Chat is call-scoped only — drop it the instant the call ends so
+    // nothing lingers past the "as long as the call is open" lifetime.
+    setChatMessages([]);
+    setUnreadChatCount(0);
   }, []);
 
   const getLocalMedia = useCallback(async (wantVideo) => {
@@ -212,6 +224,30 @@ export function GroupCallProvider({ children }) {
     [socket]
   );
 
+  // Send an in-call chat message — relayed live via socket only, never
+  // persisted. Appends it to our own list optimistically since the server
+  // deliberately doesn't echo it back to the sender.
+  const sendChatMessage = useCallback(
+    (text) => {
+      const trimmed = (text || "").trim();
+      if (!trimmed || !socket || !roomIdRef.current || !user?._id) return;
+
+      socket.emit("groupCallChatMessage", { roomId: roomIdRef.current, message: trimmed });
+
+      setChatMessages((prev) => [
+        ...prev,
+        { fromUserId: user._id, message: trimmed, sentAt: Date.now(), isSelf: true },
+      ]);
+    },
+    [socket, user]
+  );
+
+  // Called by the chat panel when it's open/visible so the unread badge
+  // doesn't keep counting messages the user is already looking at.
+  const markChatRead = useCallback(() => {
+    setUnreadChatCount(0);
+  }, []);
+
   const toggleMute = useCallback(() => {
     if (!localStreamRef.current) return;
     const next = !isMuted;
@@ -295,6 +331,14 @@ export function GroupCallProvider({ children }) {
       cleanupPeer(peerId);
     };
 
+    // Incoming in-call chat message — kept only in React state, never
+    // written anywhere persistent. Bumps the unread badge; the chat panel
+    // clears it via markChatRead while it's open.
+    const onGroupCallChatMessage = ({ fromUserId, message, sentAt }) => {
+      setChatMessages((prev) => [...prev, { fromUserId, message, sentAt, isSelf: false }]);
+      setUnreadChatCount((prev) => prev + 1);
+    };
+
     const onGroupCallError = ({ message }) => {
       setCallError(message || "Call error.");
       resetAll();
@@ -312,6 +356,7 @@ export function GroupCallProvider({ children }) {
     socket.on("peerJoined", onPeerJoined);
     socket.on("callSignal", onCallSignal);
     socket.on("peerLeft", onPeerLeft);
+    socket.on("groupCallChatMessage", onGroupCallChatMessage);
     socket.on("groupCallError", onGroupCallError);
     socket.on("removedFromCall", onRemovedFromCall);
 
@@ -320,6 +365,7 @@ export function GroupCallProvider({ children }) {
       socket.off("peerJoined", onPeerJoined);
       socket.off("callSignal", onCallSignal);
       socket.off("peerLeft", onPeerLeft);
+      socket.off("groupCallChatMessage", onGroupCallChatMessage);
       socket.off("groupCallError", onGroupCallError);
       socket.off("removedFromCall", onRemovedFromCall);
     };
@@ -361,6 +407,10 @@ export function GroupCallProvider({ children }) {
     toggleMute,
     toggleCamera,
     removeParticipant,
+    chatMessages,
+    unreadChatCount,
+    sendChatMessage,
+    markChatRead,
   };
 
   return <GroupCallContext.Provider value={value}>{children}</GroupCallContext.Provider>;

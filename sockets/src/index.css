@@ -4044,6 +4044,52 @@ button.profile-row-danger:disabled {
   border-radius: 999px;
 }
 
+.gc-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.gc-chat-toggle-btn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.gc-chat-toggle-btn:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.gc-chat-toggle-btn-active {
+  background: #128c7e;
+  border-color: #128c7e;
+}
+
+.gc-chat-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #e74c3c;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 17px;
+  text-align: center;
+}
+
 .gc-copy-link-btn {
   display: flex;
   align-items: center;
@@ -4233,6 +4279,192 @@ button.profile-row-danger:disabled {
   background: linear-gradient(0deg, rgba(0, 0, 0, 0.45), transparent);
   position: relative;
   z-index: 2;
+}
+
+/* =========================================================================
+   In-call chat panel — small floating side panel, Meet-style. Exists only
+   while <GroupCallStage/> is mounted (i.e. the call is open) and every
+   message inside it lives purely in memory — nothing here is ever sent to
+   a database.
+   ========================================================================= */
+
+.gc-chat-panel {
+  position: absolute;
+  top: 76px;
+  right: 16px;
+  bottom: 100px;
+  width: 300px;
+  max-width: calc(100vw - 32px);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  background: #1a2329;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+}
+
+.gc-chat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #fff;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.gc-chat-close-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+}
+
+.gc-chat-close-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+
+.gc-chat-hint {
+  padding: 8px 14px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.5);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.gc-chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.gc-chat-empty {
+  margin: auto;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.4);
+  text-align: center;
+}
+
+.gc-chat-msg {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-width: 92%;
+}
+
+.gc-chat-msg-self {
+  align-self: flex-end;
+  align-items: flex-end;
+}
+
+.gc-chat-msg-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11px;
+}
+
+.gc-chat-msg-author {
+  font-weight: 700;
+  color: #25d366;
+}
+
+.gc-chat-msg-self .gc-chat-msg-author {
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.gc-chat-msg-time {
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.gc-chat-msg-bubble {
+  font-size: 13px;
+  line-height: 1.4;
+  color: #fff;
+  background: #202c33;
+  padding: 7px 11px;
+  border-radius: 12px;
+  word-break: break-word;
+}
+
+.gc-chat-msg-self .gc-chat-msg-bubble {
+  background: #128c7e;
+}
+
+.gc-chat-input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.gc-chat-input {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  font-size: 13px;
+  outline: none;
+}
+
+.gc-chat-input::placeholder {
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.gc-chat-input:focus {
+  border-color: #128c7e;
+}
+
+.gc-chat-send-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: none;
+  background: #128c7e;
+  color: #fff;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+
+.gc-chat-send-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.gc-chat-send-btn:hover:not(:disabled) {
+  background: #0f7a6d;
+}
+
+@media (max-width: 640px) {
+  .gc-chat-panel {
+    top: auto;
+    right: 8px;
+    left: 8px;
+    bottom: 92px;
+    width: auto;
+    height: 60vh;
+  }
 }
 
 @media (max-width: 640px) {

@@ -530,6 +530,30 @@ try {
       });
     });
 
+    // Ephemeral in-call chat — mirrors Google Meet's "in-call messages":
+    // relayed live to everyone currently in the room and NEVER persisted
+    // anywhere (no Message.create, no DB write at all). Once the room
+    // empties or the server restarts, the messages are gone for good.
+    socket.on("groupCallChatMessage", ({ roomId, message }) => {
+      if (!roomId || typeof message !== "string" || !message.trim()) return;
+
+      const room = groupCallRooms.get(roomId);
+      // Only someone actually in this call room can send/receive its chat.
+      if (!room || !room.has(userKey)) return;
+
+      const chatMessage = {
+        roomId,
+        fromUserId: userId,
+        message: message.trim().slice(0, 1000),
+        sentAt: Date.now(),
+      };
+
+      // Broadcast to everyone else in the room; the sender renders their
+      // own message optimistically on the client, so no need to echo it
+      // back here.
+      socket.to(getGroupCallRoomName(roomId)).emit("groupCallChatMessage", chatMessage);
+    });
+
     // Host-only: forcibly remove another participant from the room. Only
     // the person who created this call (Call.initiator) may do this — same
     // permission model as a Meet/WhatsApp call organizer removing someone.

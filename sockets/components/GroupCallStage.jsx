@@ -65,6 +65,104 @@ function RemoveParticipantIcon(props) {
   );
 }
 
+// The "professional" chat-bubble logo — clicking this is what opens/closes
+// the in-call chat panel, same trigger spot as Meet's chat icon in the
+// call toolbar.
+function ChatIcon(props) {
+  return (
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+      <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
+    </svg>
+  );
+}
+
+function SendIcon(props) {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+      <line x1="22" y1="2" x2="11" y2="13" />
+      <polygon points="22 2 15 22 11 13 2 9 22 2" />
+    </svg>
+  );
+}
+
+function CloseIcon(props) {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
+  );
+}
+
+// Small floating chat panel — mirrors Meet's "in-call messages": lives only
+// as long as the parent <GroupCallStage/> is mounted (i.e. the call is
+// open), messages are plain component state passed down from
+// GroupCallContext (nothing ever touches a database), and it vanishes the
+// instant the call ends since the whole overlay unmounts then.
+function GroupCallChatPanel({ messages, profiles, onSend, onClose }) {
+  const [draft, setDraft] = useState("");
+  const listRef = useRef(null);
+
+  useEffect(() => {
+    if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
+  }, [messages]);
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    const text = draft.trim();
+    if (!text) return;
+    onSend(text);
+    setDraft("");
+  };
+
+  const nameFor = (msg) => {
+    if (msg.isSelf) return "You";
+    return profiles[msg.fromUserId]?.username || "Participant";
+  };
+
+  return (
+    <div className="gc-chat-panel">
+      <div className="gc-chat-header">
+        <span>In-call messages</span>
+        <button type="button" className="gc-chat-close-btn" onClick={onClose} title="Close chat">
+          <CloseIcon />
+        </button>
+      </div>
+
+      <div className="gc-chat-hint">Messages here can only be seen by people in the call, and are cleared when the call ends.</div>
+
+      <div className="gc-chat-messages" ref={listRef}>
+        {messages.length === 0 && <div className="gc-chat-empty">No messages yet — say hi!</div>}
+        {messages.map((msg, idx) => (
+          <div key={idx} className={`gc-chat-msg ${msg.isSelf ? "gc-chat-msg-self" : ""}`}>
+            <div className="gc-chat-msg-meta">
+              <span className="gc-chat-msg-author">{nameFor(msg)}</span>
+              <span className="gc-chat-msg-time">
+                {new Date(msg.sentAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+              </span>
+            </div>
+            <div className="gc-chat-msg-bubble">{msg.message}</div>
+          </div>
+        ))}
+      </div>
+
+      <form className="gc-chat-input-row" onSubmit={handleSubmit}>
+        <input
+          type="text"
+          className="gc-chat-input"
+          placeholder="Send a message to everyone"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          maxLength={1000}
+        />
+        <button type="submit" className="gc-chat-send-btn" disabled={!draft.trim()} title="Send">
+          <SendIcon />
+        </button>
+      </form>
+    </div>
+  );
+}
+
 function ParticipantTile({ userId, stream, mode, profile, isHost, canRemove, onRemove }) {
   const videoRef = useRef(null);
   const audioRef = useRef(null);
@@ -131,15 +229,28 @@ export default function GroupCallStage({ onLeave }) {
     toggleMute,
     toggleCamera,
     removeParticipant,
+    chatMessages,
+    unreadChatCount,
+    sendChatMessage,
+    markChatRead,
   } = useGroupCall();
 
   const localVideoRef = useRef(null);
   const [profiles, setProfiles] = useState({}); // userId -> { username, avatar }
   const [linkCopied, setLinkCopied] = useState(false);
+  // Chat panel starts closed every time — it only opens on an explicit
+  // click of the chat icon, per call.
+  const [showChat, setShowChat] = useState(false);
 
   useEffect(() => {
     if (localVideoRef.current) localVideoRef.current.srcObject = localStream || null;
   }, [localStream]);
+
+  // Keep the unread badge cleared while the panel is actually open,
+  // including for messages that arrive while the user is looking at it.
+  useEffect(() => {
+    if (showChat) markChatRead();
+  }, [showChat, chatMessages, markChatRead]);
 
   // Fetch display info for any peer we don't have a profile for yet.
   useEffect(() => {
@@ -198,9 +309,24 @@ export default function GroupCallStage({ onLeave }) {
           {totalTiles} {totalTiles === 1 ? "participant" : "participants"}
         </span>
         {callError && <span className="gc-error-banner">{callError}</span>}
-        <button type="button" className="gc-copy-link-btn" onClick={handleCopyLink}>
-          <LinkIcon /> {linkCopied ? "Link copied" : "Copy link"}
-        </button>
+        <div className="gc-topbar-actions">
+          <button type="button" className="gc-copy-link-btn" onClick={handleCopyLink}>
+            <LinkIcon /> {linkCopied ? "Link copied" : "Copy link"}
+          </button>
+          {/* The "professional chat logo" — click to open/close the small
+              in-call chat panel, works for both video and audio-mode calls. */}
+          <button
+            type="button"
+            className={`gc-chat-toggle-btn ${showChat ? "gc-chat-toggle-btn-active" : ""}`}
+            onClick={() => setShowChat((prev) => !prev)}
+            title={showChat ? "Close chat" : "Open chat"}
+          >
+            <ChatIcon />
+            {!showChat && unreadChatCount > 0 && (
+              <span className="gc-chat-badge">{unreadChatCount > 9 ? "9+" : unreadChatCount}</span>
+            )}
+          </button>
+        </div>
       </div>
 
       <div className={`gc-grid gc-grid-${Math.min(totalTiles, 9)}`}>
@@ -238,6 +364,18 @@ export default function GroupCallStage({ onLeave }) {
           />
         ))}
       </div>
+
+      {/* Only ever rendered while callStatus === "in-call" (see the early
+          return above), so this — and every message inside it — disappears
+          the moment the call ends. Nothing here is persisted. */}
+      {showChat && (
+        <GroupCallChatPanel
+          messages={chatMessages}
+          profiles={profiles}
+          onSend={sendChatMessage}
+          onClose={() => setShowChat(false)}
+        />
+      )}
 
       <div className="gc-controls">
         <button
