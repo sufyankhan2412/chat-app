@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { formatDuration } from "../utils/formatFileSize";
+import { formatDuration } from "../utils/Formatfilesize";
 
 // A small custom play/pause + progress-bar player for voice note bubbles.
 // Wraps a plain <audio> element rather than using its native `controls` UI,

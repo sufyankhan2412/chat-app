@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { getCallRoomInfo } from "../api";
-import { useGroupCall } from "../context/Groupcallcontext";
+import { useGroupCall } from "../context/GroupCallContext";
 import { useAuth } from "../context/Authcontext";
 import { resolveAvatarUrl } from "../utils/avatar";
 

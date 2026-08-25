@@ -8,7 +8,7 @@ import React, {
 } from "react";
 import { useSocket } from "./Socketcontext";
 import { useAuth } from "./Authcontext";
-import { createCallLink } from "../api";
+import { createCallLink, getGroupCallChatHistory } from "../api";
 
 const GroupCallContext = createContext(null);
 
@@ -56,19 +56,32 @@ export function GroupCallProvider({ children }) {
   // participants (mirrors Meet/WhatsApp's "organizer" permissions).
   const [hostId, setHostId] = useState(null);
 
-  // In-call chat — lives purely in memory for the duration of the call
-  // (mirrors Google Meet's in-call messages). Never sent to the backend
-  // for persistence, never written to any database, and wiped the moment
-  // the call ends (see resetAll below) — a page refresh or leaving the
-  // call loses it just like Meet's does.
+  // Meeting-level chat — persisted server-side against the room's
+  // roomId (see backend/models/GroupCallMessage.js), not scoped to this
+  // socket session. Leaving and rejoining the same room loads the same
+  // history back rather than starting a new, empty chat; only the
+  // in-memory view here (this array) is rebuilt fresh on each join.
   const [chatMessages, setChatMessages] = useState([]);
   const [unreadChatCount, setUnreadChatCount] = useState(0);
+  // Whether there's an older page of chat history available to load
+  // (cursor pagination — see loadOlderChatMessages below).
+  const [hasMoreChatHistory, setHasMoreChatHistory] = useState(false);
+  const [loadingOlderChat, setLoadingOlderChat] = useState(false);
+  // The first message (by _id) that was unread when this join happened —
+  // drawn once from the server's lastReadMessageId so the chat panel can
+  // render a "New messages" divider at the right spot. Stays fixed for
+  // the rest of this call session even as those messages get marked read.
+  const [firstUnreadMessageId, setFirstUnreadMessageId] = useState(null);
 
   const localStreamRef = useRef(null);
   const roomIdRef = useRef(null);
   const modeRef = useRef("video");
   // Map<userId, RTCPeerConnection>
   const pcsRef = useRef(new Map());
+  // Mirrors the server's per-participant read cursor so markChatRead can
+  // skip redundant "markCallChatRead" emits once we're already caught up.
+  const lastReadMessageIdRef = useRef(null);
+  const loadingOlderChatRef = useRef(false);
 
   const cleanupPeer = useCallback((peerId) => {
     const pc = pcsRef.current.get(peerId);
@@ -107,10 +120,16 @@ export function GroupCallProvider({ children }) {
     setIsCameraOff(false);
     setCallStartedAt(null);
     setHostId(null);
-    // Chat is call-scoped only — drop it the instant the call ends so
-    // nothing lingers past the "as long as the call is open" lifetime.
+    // Only the in-memory VIEW of the chat is cleared here — the messages
+    // themselves stay persisted server-side against the roomId and come
+    // back on the next join/rejoin (see onGroupCallJoined below).
     setChatMessages([]);
     setUnreadChatCount(0);
+    setHasMoreChatHistory(false);
+    setFirstUnreadMessageId(null);
+    lastReadMessageIdRef.current = null;
+    loadingOlderChatRef.current = false;
+    setLoadingOlderChat(false);
   }, []);
 
   const getLocalMedia = useCallback(async (wantVideo) => {
@@ -224,29 +243,66 @@ export function GroupCallProvider({ children }) {
     [socket]
   );
 
-  // Send an in-call chat message — relayed live via socket only, never
-  // persisted. Appends it to our own list optimistically since the server
-  // deliberately doesn't echo it back to the sender.
+  // Send a meeting-chat message. The server persists it and broadcasts
+  // the saved copy (with its real _id) back to the whole room, sender
+  // included (see onGroupCallChatMessage below) — so unlike before, we
+  // don't append an optimistic local copy here; our own message shows up
+  // the same way everyone else's does, just a beat later.
   const sendChatMessage = useCallback(
     (text) => {
       const trimmed = (text || "").trim();
-      if (!trimmed || !socket || !roomIdRef.current || !user?._id) return;
-
+      if (!trimmed || !socket || !roomIdRef.current) return;
       socket.emit("groupCallChatMessage", { roomId: roomIdRef.current, message: trimmed });
-
-      setChatMessages((prev) => [
-        ...prev,
-        { fromUserId: user._id, message: trimmed, sentAt: Date.now(), isSelf: true },
-      ]);
     },
-    [socket, user]
+    [socket]
   );
 
-  // Called by the chat panel when it's open/visible so the unread badge
-  // doesn't keep counting messages the user is already looking at.
-  const markChatRead = useCallback(() => {
-    setUnreadChatCount(0);
-  }, []);
+  // Advances our read cursor to `messageId` (defaults to the newest
+  // message currently loaded) and persists it server-side, so a later
+  // leave + rejoin of this same meeting picks up unread state from
+  // exactly here rather than from the start of the chat. Called by the
+  // chat panel whenever it's open and visible.
+  const markChatRead = useCallback(
+    (messageId) => {
+      setUnreadChatCount(0);
+      const targetId = messageId || chatMessages[chatMessages.length - 1]?._id;
+      if (!targetId || targetId === lastReadMessageIdRef.current) return;
+      if (!socket || !roomIdRef.current) return;
+      lastReadMessageIdRef.current = targetId;
+      socket.emit("markCallChatRead", { roomId: roomIdRef.current, lastReadMessageId: targetId });
+    },
+    [socket, chatMessages]
+  );
+
+  // Loads one older page of this meeting's chat (scrolling further back
+  // than what joinCallRoom seeded) and prepends it to the in-memory list.
+  const loadOlderChatMessages = useCallback(async () => {
+    if (!roomIdRef.current || !hasMoreChatHistory || loadingOlderChatRef.current) return;
+    const oldest = chatMessages[0];
+    if (!oldest) return;
+
+    loadingOlderChatRef.current = true;
+    setLoadingOlderChat(true);
+    try {
+      const { data } = await getGroupCallChatHistory(roomIdRef.current, {
+        before: oldest.sentAt,
+      });
+      const older = data.messages.map((m) => ({
+        _id: String(m._id),
+        fromUserId: m.sender?._id || m.sender,
+        message: m.message,
+        sentAt: m.createdAt,
+        isSelf: String(m.sender?._id || m.sender) === String(user?._id),
+      }));
+      setChatMessages((prev) => [...older, ...prev]);
+      setHasMoreChatHistory(Boolean(data.hasMore));
+    } catch (err) {
+      console.error("loadOlderChatMessages error:", err);
+    } finally {
+      loadingOlderChatRef.current = false;
+      setLoadingOlderChat(false);
+    }
+  }, [hasMoreChatHistory, user, chatMessages]);
 
   const toggleMute = useCallback(() => {
     if (!localStreamRef.current) return;
@@ -266,8 +322,38 @@ export function GroupCallProvider({ children }) {
   useEffect(() => {
     if (!socket) return;
 
-    const onGroupCallJoined = async ({ peers: existingPeers, hostId: joinedHostId }) => {
+    const onGroupCallJoined = async ({
+      peers: existingPeers,
+      hostId: joinedHostId,
+      chatHistory,
+      lastReadMessageId,
+    }) => {
       setHostId(joinedHostId || null);
+
+      // Meeting-level chat: whether this is a first join or a rejoin,
+      // the server hands back the same persisted history plus wherever
+      // our own read cursor last left off, so we can figure out exactly
+      // which messages (if any) are new since we were last here.
+      if (chatHistory) {
+        const seeded = chatHistory.messages.map((m) => ({
+          _id: String(m._id),
+          fromUserId: m.sender,
+          message: m.message,
+          sentAt: m.createdAt,
+          isSelf: String(m.sender) === String(user?._id),
+        }));
+        setChatMessages(seeded);
+        setHasMoreChatHistory(Boolean(chatHistory.hasMore));
+
+        lastReadMessageIdRef.current = lastReadMessageId || null;
+        const readIndex = lastReadMessageId
+          ? seeded.findIndex((m) => m._id === lastReadMessageId)
+          : -1;
+        const unread = seeded.slice(readIndex + 1).filter((m) => !m.isSelf);
+        setUnreadChatCount(unread.length);
+        setFirstUnreadMessageId(unread[0]?._id || null);
+      }
+
       // I just joined — I offer to everyone who was already in the room.
       for (const peerId of existingPeers) {
         try {
@@ -331,12 +417,16 @@ export function GroupCallProvider({ children }) {
       cleanupPeer(peerId);
     };
 
-    // Incoming in-call chat message — kept only in React state, never
-    // written anywhere persistent. Bumps the unread badge; the chat panel
+    // Incoming meeting-chat message — the server already persisted this
+    // (see Socketmanager.js) and broadcasts it to the whole room,
+    // including back to whoever sent it, so this is how our own sent
+    // messages appear too, not just everyone else's. Only bumps the
+    // unread badge for messages that aren't our own; the chat panel
     // clears it via markChatRead while it's open.
-    const onGroupCallChatMessage = ({ fromUserId, message, sentAt }) => {
-      setChatMessages((prev) => [...prev, { fromUserId, message, sentAt, isSelf: false }]);
-      setUnreadChatCount((prev) => prev + 1);
+    const onGroupCallChatMessage = ({ _id, fromUserId, message, sentAt }) => {
+      const isSelf = String(fromUserId) === String(user?._id);
+      setChatMessages((prev) => [...prev, { _id, fromUserId, message, sentAt, isSelf }]);
+      if (!isSelf) setUnreadChatCount((prev) => prev + 1);
     };
 
     const onGroupCallError = ({ message }) => {
@@ -369,7 +459,7 @@ export function GroupCallProvider({ children }) {
       socket.off("groupCallError", onGroupCallError);
       socket.off("removedFromCall", onRemovedFromCall);
     };
-  }, [socket, getOrCreatePeerConnection, cleanupPeer, resetAll]);
+  }, [socket, getOrCreatePeerConnection, cleanupPeer, resetAll, user]);
 
   // Auto-clear transient error banner.
   useEffect(() => {
@@ -411,6 +501,10 @@ export function GroupCallProvider({ children }) {
     unreadChatCount,
     sendChatMessage,
     markChatRead,
+    hasMoreChatHistory,
+    loadingOlderChat,
+    firstUnreadMessageId,
+    loadOlderChatMessages,
   };
 
   return <GroupCallContext.Provider value={value}>{children}</GroupCallContext.Provider>;

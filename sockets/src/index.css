@@ -4358,6 +4358,37 @@ button.profile-row-danger:disabled {
   text-align: center;
 }
 
+.gc-chat-load-older {
+  text-align: center;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.4);
+  padding: 4px 0 8px;
+}
+
+.gc-chat-unread-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0;
+}
+
+.gc-chat-unread-divider::before,
+.gc-chat-unread-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: rgba(37, 211, 102, 0.35);
+}
+
+.gc-chat-unread-divider span {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #25d366;
+  white-space: nowrap;
+}
+
 .gc-chat-msg {
   display: flex;
   flex-direction: column;

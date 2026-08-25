@@ -4,6 +4,8 @@ const User = require("../models/User");
 const Message = require("../models/Message");
 const Contact = require("../models/Contact");
 const Call = require("../models/Call");
+const GroupCallMessage = require("../models/Groupcallmessage");
+const CallChatReadState = require("../models/Callchatreadstate");
 
 // In-memory map of userId -> Set<socketId> for currently connected users
 const onlineUsers = new Map();
@@ -23,6 +25,27 @@ const groupCallRooms = new Map();
 
 function getGroupCallRoomName(roomId) {
   return `group_call_${roomId}`;
+}
+
+// One page of a meeting's persistent chat, newest-first internally then
+// flipped to ascending for rendering — same cursor convention as
+// GET /api/messages/:userId (limit + `before` an ISO timestamp).
+const GROUP_CALL_CHAT_PAGE_SIZE = 50;
+
+async function fetchGroupCallChatPage(roomId, { before } = {}) {
+  const query = { roomId };
+  if (before) {
+    const beforeDate = new Date(before);
+    if (!Number.isNaN(beforeDate.getTime())) {
+      query.createdAt = { $lt: beforeDate };
+    }
+  }
+  const page = await GroupCallMessage.find(query)
+    .sort({ createdAt: -1 })
+    .limit(GROUP_CALL_CHAT_PAGE_SIZE);
+  const messages = page.reverse();
+  const hasMore = page.length === GROUP_CALL_CHAT_PAGE_SIZE;
+  return { messages, hasMore };
 }
 
 // In-memory map of room name (sorted pair, see getRoomName) -> metadata for
@@ -494,11 +517,25 @@ try {
         });
         await call.save();
 
+        // Meeting-level chat: the room's chat belongs to the roomId, not
+        // to this join. Whether this is the first time joining or a
+        // rejoin after leaving, the same persisted history and the same
+        // per-participant read cursor come back here — never a fresh,
+        // empty chat tied to this socket/session.
+        const [chatPage, readState] = await Promise.all([
+          fetchGroupCallChatPage(roomId),
+          CallChatReadState.findOne({ roomId, user: userId }),
+        ]);
+
         socket.emit("groupCallJoined", {
           roomId,
           callType: call.callType,
           peers: existingPeers,
           hostId: String(call.initiator),
+          chatHistory: { messages: chatPage.messages, hasMore: chatPage.hasMore },
+          lastReadMessageId: readState?.lastReadMessageId
+            ? String(readState.lastReadMessageId)
+            : null,
         });
 
         socket.to(getGroupCallRoomName(roomId)).emit("peerJoined", {
@@ -530,28 +567,60 @@ try {
       });
     });
 
-    // Ephemeral in-call chat — mirrors Google Meet's "in-call messages":
-    // relayed live to everyone currently in the room and NEVER persisted
-    // anywhere (no Message.create, no DB write at all). Once the room
-    // empties or the server restarts, the messages are gone for good.
-    socket.on("groupCallChatMessage", ({ roomId, message }) => {
+    // Persistent meeting-level chat — every message is written against
+    // the meeting's roomId (GroupCallMessage), never held only in memory,
+    // so it survives a participant leaving and later rejoining the same
+    // meeting. The server assigns the real _id/createdAt and broadcasts
+    // to the WHOLE room, sender included, so every tab ends up with the
+    // one persisted copy rather than a client-only optimistic message
+    // that could drift from what got saved.
+    socket.on("groupCallChatMessage", async ({ roomId, message }) => {
       if (!roomId || typeof message !== "string" || !message.trim()) return;
 
       const room = groupCallRooms.get(roomId);
       // Only someone actually in this call room can send/receive its chat.
       if (!room || !room.has(userKey)) return;
 
-      const chatMessage = {
-        roomId,
-        fromUserId: userId,
-        message: message.trim().slice(0, 1000),
-        sentAt: Date.now(),
-      };
+      try {
+        const saved = await GroupCallMessage.create({
+          roomId,
+          sender: userId,
+          message: message.trim().slice(0, 1000),
+        });
 
-      // Broadcast to everyone else in the room; the sender renders their
-      // own message optimistically on the client, so no need to echo it
-      // back here.
-      socket.to(getGroupCallRoomName(roomId)).emit("groupCallChatMessage", chatMessage);
+        const chatMessage = {
+          _id: String(saved._id),
+          roomId,
+          fromUserId: userId,
+          message: saved.message,
+          sentAt: saved.createdAt,
+        };
+
+        io.to(getGroupCallRoomName(roomId)).emit("groupCallChatMessage", chatMessage);
+      } catch (err) {
+        console.error("groupCallChatMessage error:", err.message);
+      }
+    });
+
+    // Per-participant read cursor for the meeting chat. Deliberately not
+    // a flag on the message itself (see CallChatReadState) — each
+    // participant's own "read up to here" position is independent, so
+    // this only ever updates the (roomId, userId) document, upserting it
+    // the first time this participant reads anything in this meeting.
+    socket.on("markCallChatRead", async ({ roomId, lastReadMessageId }) => {
+      if (!roomId || !lastReadMessageId) return;
+      const room = groupCallRooms.get(roomId);
+      if (!room || !room.has(userKey)) return;
+
+      try {
+        await CallChatReadState.findOneAndUpdate(
+          { roomId, user: userId },
+          { lastReadMessageId, lastReadAt: new Date() },
+          { upsert: true }
+        );
+      } catch (err) {
+        console.error("markCallChatRead error:", err.message);
+      }
     });
 
     // Host-only: forcibly remove another participant from the room. Only

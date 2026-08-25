@@ -5,7 +5,7 @@ import { useSocket } from "../context/Socketcontext";
 import { useAuth } from "../context/Authcontext";
 import { useProfileModal } from "../context/Profilemodalcontext";
 import { resolveAvatarUrl } from "../utils/avatar";
-import { PhoneIcon } from "./CallIcons";
+import { PhoneIcon } from "./Callicons";
 import SearchUsers from "../SearchUsers";
 
 // Formats the last-message timestamp the way WhatsApp does in the chat list:

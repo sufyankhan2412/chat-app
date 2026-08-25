@@ -8,17 +8,17 @@ import {
 import { AuthProvider, useAuth } from "../context/Authcontext";
 import { SocketProvider } from "../context/Socketcontext";
 import { CallProvider } from "../context/Callcontext";
-import { GroupCallProvider } from "../context/Groupcallcontext";
+import { GroupCallProvider } from "../context/GroupCallContext";
 import { ProfileModalProvider } from "../context/Profilemodalcontext";
 import Login from "../components/Login";
 import Signup from "../components/Signup";
 import Sidebar from "../components/Sidebar";
-import ChatWindow from "../components/Chatwindow";
+import ChatWindow from "../components/ChatWindow";
 import ProfileModal from "../components/Profilemodal";
 import CallModal from "../components/CallModal";
-import GroupCallStage from "../components/Groupcallstage"
+import GroupCallStage from "../components/GroupCallStage"
 import CallLogsPage from "../components/Calllogs";
-import JoinCallPage from "../components/Joincallpage"
+import JoinCallPage from "../components/JoinCallPage"
 
 function SocketProviderWrapper({ children }) {
   const { token, user } = useAuth();

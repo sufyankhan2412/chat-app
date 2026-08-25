@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useGroupCall } from "../context/Groupcallcontext";
+import { useGroupCall } from "../context/GroupCallContext";
 
 function VideoIcon() {
   return (

@@ -2,6 +2,7 @@ const express = require("express");
 const crypto = require("crypto");
 const Message = require("../models/Message");
 const Call = require("../models/Call");
+const GroupCallMessage = require("../models/Groupcallmessage");
 const { protect } = require("../middleware/Authmiddleware");
 
 const router = express.Router();
@@ -138,6 +139,50 @@ router.get("/group/:roomId", protect, async (req, res) => {
     }
 
     res.json({ call });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// @route  GET /api/calls/group/:roomId/chat
+// Older pages of one meeting's persistent chat. The most recent page
+// already comes back over the socket when joining/rejoining the room
+// (see "joinCallRoom" in Socketmanager.js) — this route is only for
+// scrolling further back into a long meeting's history, same
+// limit + `before` (ISO timestamp) cursor convention as
+// GET /api/messages/:userId. Restricted to people who actually attended
+// this call, same rule as GET /group/:roomId.
+router.get("/group/:roomId/chat", protect, async (req, res) => {
+  try {
+    const call = await Call.findOne({ roomId: req.params.roomId }).select("participants");
+    if (!call) return res.status(404).json({ message: "Call not found" });
+
+    const wasParticipant = call.participants.some(
+      (p) => String(p.user) === String(req.user._id)
+    );
+    if (!wasParticipant) {
+      return res.status(403).json({ message: "You weren't part of this call" });
+    }
+
+    const limit = Math.min(parseInt(req.query.limit, 10) || 50, 100);
+    const before = req.query.before;
+
+    const query = { roomId: req.params.roomId };
+    if (before) {
+      const beforeDate = new Date(before);
+      if (!Number.isNaN(beforeDate.getTime())) {
+        query.createdAt = { $lt: beforeDate };
+      }
+    }
+
+    const page = await GroupCallMessage.find(query)
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .populate("sender", "username avatar");
+    const messages = page.reverse();
+    const hasMore = page.length === limit;
+
+    res.json({ messages, hasMore });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

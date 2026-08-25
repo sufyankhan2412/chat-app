@@ -15,7 +15,7 @@ import { resolveAvatarUrl } from "../utils/avatar";
 import { formatLastSeen } from "../utils/formatLastSeen";
 import BlockedContacts from "./Blockedcontacts";
 import MediaGallery from "./Mediagallery";
-import StarredMessages from "./StarredMessages";
+import StarredMessages from "./Starredmessages";
 
 // WhatsApp's disappearing-message presets, in milliseconds.
 const DISAPPEARING_OPTIONS = [

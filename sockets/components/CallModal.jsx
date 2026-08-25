@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useCall, CALL_STATE } from "../context/Callcontext";
-import { useGroupCall } from "../context/Groupcallcontext";
+import { useGroupCall } from "../context/GroupCallContext";
 import { resolveAvatarUrl } from "../utils/avatar";
 
 // Simple line-style call icons drawn to match the app's existing icon set

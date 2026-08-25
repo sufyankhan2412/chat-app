@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { useGroupCall } from "../context/Groupcallcontext";
+import { useGroupCall } from "../context/GroupCallContext";
 import { getUserProfile } from "../api";
 import { resolveAvatarUrl } from "../utils/avatar";
 
@@ -99,13 +99,55 @@ function CloseIcon(props) {
 // open), messages are plain component state passed down from
 // GroupCallContext (nothing ever touches a database), and it vanishes the
 // instant the call ends since the whole overlay unmounts then.
-function GroupCallChatPanel({ messages, profiles, onSend, onClose }) {
+function GroupCallChatPanel({
+  messages,
+  profiles,
+  onSend,
+  onClose,
+  firstUnreadMessageId,
+  hasMoreChatHistory,
+  loadingOlderChat,
+  onLoadOlder,
+}) {
   const [draft, setDraft] = useState("");
   const listRef = useRef(null);
+  const dividerRef = useRef(null);
+  // Only steer the scroll position toward the unread divider once, the
+  // first time this panel is opened with a divider present — after that,
+  // normal "stick to the bottom on new messages" behavior takes over.
+  const hasScrolledToUnreadRef = useRef(false);
 
   useEffect(() => {
-    if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
+    if (!listRef.current) return;
+    if (!hasScrolledToUnreadRef.current) {
+      hasScrolledToUnreadRef.current = true;
+      if (dividerRef.current) {
+        // Land right at "New messages" — a rejoining participant sees
+        // exactly what they missed instead of the very start of the
+        // meeting or (if there were many unread messages) losing context
+        // by landing straight at the very bottom.
+        dividerRef.current.scrollIntoView({ block: "start" });
+        return;
+      }
+    }
+    listRef.current.scrollTop = listRef.current.scrollHeight;
   }, [messages]);
+
+  // Loading older pages while scrolled near the top, WhatsApp/Meet-style.
+  const handleScroll = () => {
+    if (!listRef.current || !hasMoreChatHistory || loadingOlderChat) return;
+    if (listRef.current.scrollTop > 60) return;
+    const prevHeight = listRef.current.scrollHeight;
+    Promise.resolve(onLoadOlder()).then(() => {
+      // Keep the same messages in view after older ones are prepended,
+      // instead of visually jumping around under the user.
+      requestAnimationFrame(() => {
+        if (listRef.current) {
+          listRef.current.scrollTop = listRef.current.scrollHeight - prevHeight;
+        }
+      });
+    });
+  };
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -123,26 +165,38 @@ function GroupCallChatPanel({ messages, profiles, onSend, onClose }) {
   return (
     <div className="gc-chat-panel">
       <div className="gc-chat-header">
-        <span>In-call messages</span>
+        <span>Meeting chat</span>
         <button type="button" className="gc-chat-close-btn" onClick={onClose} title="Close chat">
           <CloseIcon />
         </button>
       </div>
 
-      <div className="gc-chat-hint">Messages here can only be seen by people in the call, and are cleared when the call ends.</div>
+      <div className="gc-chat-hint">Messages here are saved with the meeting — anyone who rejoins can see the full history.</div>
 
-      <div className="gc-chat-messages" ref={listRef}>
+      <div className="gc-chat-messages" ref={listRef} onScroll={handleScroll}>
+        {hasMoreChatHistory && (
+          <div className="gc-chat-load-older">
+            {loadingOlderChat ? "Loading earlier messages…" : "Scroll up for earlier messages"}
+          </div>
+        )}
         {messages.length === 0 && <div className="gc-chat-empty">No messages yet — say hi!</div>}
         {messages.map((msg, idx) => (
-          <div key={idx} className={`gc-chat-msg ${msg.isSelf ? "gc-chat-msg-self" : ""}`}>
-            <div className="gc-chat-msg-meta">
-              <span className="gc-chat-msg-author">{nameFor(msg)}</span>
-              <span className="gc-chat-msg-time">
-                {new Date(msg.sentAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-              </span>
+          <React.Fragment key={msg._id || idx}>
+            {msg._id && msg._id === firstUnreadMessageId && (
+              <div className="gc-chat-unread-divider" ref={dividerRef}>
+                <span>New messages</span>
+              </div>
+            )}
+            <div className={`gc-chat-msg ${msg.isSelf ? "gc-chat-msg-self" : ""}`}>
+              <div className="gc-chat-msg-meta">
+                <span className="gc-chat-msg-author">{nameFor(msg)}</span>
+                <span className="gc-chat-msg-time">
+                  {new Date(msg.sentAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                </span>
+              </div>
+              <div className="gc-chat-msg-bubble">{msg.message}</div>
             </div>
-            <div className="gc-chat-msg-bubble">{msg.message}</div>
-          </div>
+          </React.Fragment>
         ))}
       </div>
 
@@ -233,6 +287,10 @@ export default function GroupCallStage({ onLeave }) {
     unreadChatCount,
     sendChatMessage,
     markChatRead,
+    hasMoreChatHistory,
+    loadingOlderChat,
+    firstUnreadMessageId,
+    loadOlderChatMessages,
   } = useGroupCall();
 
   const localVideoRef = useRef(null);
@@ -246,10 +304,11 @@ export default function GroupCallStage({ onLeave }) {
     if (localVideoRef.current) localVideoRef.current.srcObject = localStream || null;
   }, [localStream]);
 
-  // Keep the unread badge cleared while the panel is actually open,
-  // including for messages that arrive while the user is looking at it.
+  // Keep the unread badge cleared — and the server-side read cursor
+  // advanced — while the panel is actually open, including for messages
+  // that arrive while the user is looking at it.
   useEffect(() => {
-    if (showChat) markChatRead();
+    if (showChat) markChatRead(chatMessages[chatMessages.length - 1]?._id);
   }, [showChat, chatMessages, markChatRead]);
 
   // Fetch display info for any peer we don't have a profile for yet.
@@ -263,6 +322,26 @@ export default function GroupCallStage({ onLeave }) {
         .catch(() => {});
     });
   }, [peers, profiles]);
+
+  // Chat history can include senders who aren't currently in the room
+  // (e.g. someone who already left, or a message from before I joined) —
+  // fetch their profiles too so the chat panel can show real names
+  // instead of falling back to "Participant".
+  useEffect(() => {
+    const missing = new Set();
+    chatMessages.forEach((msg) => {
+      if (!msg.isSelf && msg.fromUserId && !profiles[msg.fromUserId]) {
+        missing.add(msg.fromUserId);
+      }
+    });
+    missing.forEach((peerId) => {
+      getUserProfile(peerId)
+        .then(({ data }) => {
+          setProfiles((prev) => ({ ...prev, [peerId]: data.user }));
+        })
+        .catch(() => {});
+    });
+  }, [chatMessages, profiles]);
 
   // Self-guarding so this can be mounted globally (alongside <CallModal/>)
   // and simply render nothing the rest of the time — needed because a
@@ -374,6 +453,10 @@ export default function GroupCallStage({ onLeave }) {
           profiles={profiles}
           onSend={sendChatMessage}
           onClose={() => setShowChat(false)}
+          firstUnreadMessageId={firstUnreadMessageId}
+          hasMoreChatHistory={hasMoreChatHistory}
+          loadingOlderChat={loadingOlderChat}
+          onLoadOlder={loadOlderChatMessages}
         />
       )}
 

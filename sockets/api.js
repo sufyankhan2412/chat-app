@@ -124,4 +124,11 @@ export const getGroupCallLog = (roomId) => api.get(`/calls/group/${roomId}`);
 // "Delete for me" on a group-call log entry.
 export const deleteGroupCallLog = (roomId) => api.delete(`/calls/group/${roomId}`);
 
+// Older page of a meeting's persistent chat (cursor pagination via
+// `before`, same convention as getMessages). The newest page is already
+// delivered over the socket on join/rejoin — this is only for scrolling
+// further back.
+export const getGroupCallChatHistory = (roomId, params = {}) =>
+  api.get(`/calls/group/${roomId}/chat`, { params });
+
 export default api;
