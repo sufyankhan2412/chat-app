@@ -6,6 +6,12 @@ const Contact = require("../models/Contact");
 const Call = require("../models/Call");
 const GroupCallMessage = require("../models/Groupcallmessage");
 const CallChatReadState = require("../models/Callchatreadstate");
+const { enqueueGroupCallTranscription } = require("../services/transcriptionService");
+
+// How long to wait, after a group call's room empties, before kicking off
+// transcription — gives any last audio chunk uploads still in flight over
+// the network (e.g. from whoever just left) a chance to land first.
+const TRANSCRIPTION_START_DELAY_MS = 15000;
 
 // In-memory map of userId -> Set<socketId> for currently connected users
 const onlineUsers = new Map();
@@ -510,10 +516,17 @@ try {
         socket.join(getGroupCallRoomName(roomId));
         socket.data.activeCallRoom = roomId;
 
+        // Captured once, rather than re-read later, so the timestamp the
+        // client uses to tag/name its audio recording (see the
+        // "groupCallJoined" emit below) is EXACTLY the same value that
+        // ends up on this participants entry — that's what lets
+        // transcriptionService.js match an uploaded file back to the
+        // right join session.
+        const joinedAt = new Date();
         call.participants.push({
           user: userId,
           mode,
-          joinedAt: new Date(),
+          joinedAt,
         });
         await call.save();
 
@@ -532,6 +545,15 @@ try {
           callType: call.callType,
           peers: existingPeers,
           hostId: String(call.initiator),
+          // Shared clock for call-transcription alignment (see
+          // GroupCallContext.jsx's recording logic and
+          // transcriptionService.js's merge step). Both are SERVER
+          // timestamps deliberately, not left to each client's own
+          // clock, so segments from different participants' devices
+          // line up on one timeline regardless of clock drift between
+          // them.
+          callStartedAt: call.startedAt.getTime(),
+          joinedAt: joinedAt.getTime(),
           chatHistory: { messages: chatPage.messages, hasMore: chatPage.hasMore },
           lastReadMessageId: readState?.lastReadMessageId
             ? String(readState.lastReadMessageId)
@@ -671,6 +693,13 @@ try {
         }
         await call.save();
 
+        if (call.status === "ended") {
+          setTimeout(
+            () => enqueueGroupCallTranscription(roomId, io),
+            TRANSCRIPTION_START_DELAY_MS
+          );
+        }
+
         io.to(getGroupCallRoomName(roomId)).emit("peerLeft", {
           roomId,
           peerId: targetKey,
@@ -718,6 +747,13 @@ try {
           }
 
           await call.save();
+
+          if (call.status === "ended") {
+            setTimeout(
+              () => enqueueGroupCallTranscription(roomId, io),
+              TRANSCRIPTION_START_DELAY_MS
+            );
+          }
         }
       } catch (err) {
         console.error("leaveGroupCallRoom error:", err.message);

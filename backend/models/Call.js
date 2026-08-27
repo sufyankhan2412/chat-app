@@ -41,6 +41,32 @@ const callSchema = new mongoose.Schema(
     deletedFor: [
       { type: mongoose.Schema.Types.ObjectId, ref: "User", default: [] },
     ],
+
+    // Filled in by backend/services/transcriptionService.js once every
+    // participant's own locally-recorded audio (see GroupCallContext.jsx —
+    // calls are mesh WebRTC, so the server never otherwise sees any media)
+    // has been uploaded and run through transcription. "not_started" until
+    // the room empties, then "processing" for the (short) merge job, then
+    // "completed"/"failed". txtPath/jsonPath point at files under
+    // backend/uploads/transcripts/, not at anything web-servable directly —
+    // they're only ever read back through the authenticated
+    // GET /api/calls/:roomId/transcript route.
+    transcript: {
+      status: {
+        type: String,
+        enum: ["not_started", "processing", "completed", "failed"],
+        default: "not_started",
+      },
+      txtPath: { type: String, default: null },
+      jsonPath: { type: String, default: null },
+      // Usernames of anyone who joined but never produced any usable
+      // audio (denied mic permission, crashed before the first chunk
+      // uploaded, etc.) — surfaced to the viewer rather than silently
+      // dropping them from the transcript.
+      missingParticipants: [{ type: String }],
+      error: { type: String, default: null },
+      completedAt: { type: Date, default: null },
+    },
   },
   { timestamps: true }
 );

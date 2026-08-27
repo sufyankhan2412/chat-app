@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { getGroupCallLog } from "../api";
+import { getGroupCallLog, getTranscriptStatus, downloadTranscript } from "../api";
 import { resolveAvatarUrl } from "../utils/avatar";
 import { formatCallDuration } from "../../backend/formatCallDuration";
 import { PhoneIcon, VideoIcon } from "./Callicons";
@@ -24,6 +24,8 @@ export default function GroupCallDetailModal({ roomId, onClose }) {
   const [call, setCall] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [transcript, setTranscript] = useState({ status: "not_started" });
+  const [downloading, setDownloading] = useState(false);
 
   useEffect(() => {
     if (!roomId) return;
@@ -44,6 +46,53 @@ export default function GroupCallDetailModal({ roomId, onClose }) {
       cancelled = true;
     };
   }, [roomId]);
+
+  // Polls the transcript status while a call is still being processed
+  // (see enqueueGroupCallTranscription in transcriptionService.js) so the
+  // "Download transcript" option appears on its own once it's ready,
+  // without the user needing to reopen this modal.
+  useEffect(() => {
+    if (!roomId) return;
+    let cancelled = false;
+    let timer;
+
+    const poll = async () => {
+      try {
+        const { data } = await getTranscriptStatus(roomId);
+        if (cancelled) return;
+        setTranscript(data);
+        if (data.status === "not_started" || data.status === "processing") {
+          timer = setTimeout(poll, 5000);
+        }
+      } catch {
+        // No transcript support for this call (or it hasn't ended yet) —
+        // fail silently rather than surfacing a second error banner.
+      }
+    };
+
+    poll();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [roomId]);
+
+  const handleDownloadTranscript = async () => {
+    setDownloading(true);
+    try {
+      const { data } = await downloadTranscript(roomId);
+      const url = URL.createObjectURL(data);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `call-transcript-${roomId}.txt`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("downloadTranscript error:", err);
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -108,6 +157,41 @@ export default function GroupCallDetailModal({ roomId, onClose }) {
                     </div>
                   </div>
                 ))}
+              </div>
+
+              <div className="profile-divider" />
+
+              <div className="call-detail-history gc-transcript-section">
+                <div className="call-detail-history-title">Transcript</div>
+
+                {transcript.status === "completed" && (
+                  <button
+                    type="button"
+                    className="gc-transcript-download-btn"
+                    onClick={handleDownloadTranscript}
+                    disabled={downloading}
+                  >
+                    {downloading ? "Downloading…" : "Download transcript (.txt)"}
+                  </button>
+                )}
+
+                {(transcript.status === "not_started" || transcript.status === "processing") && (
+                  <p className="gc-transcript-note">
+                    Transcript is being generated — check back shortly.
+                  </p>
+                )}
+
+                {transcript.status === "failed" && (
+                  <p className="gc-transcript-note gc-transcript-error">
+                    Couldn't generate a transcript for this call.
+                  </p>
+                )}
+
+                {transcript.missingParticipants?.length > 0 && (
+                  <p className="gc-transcript-note">
+                    No usable audio was captured for: {transcript.missingParticipants.join(", ")}
+                  </p>
+                )}
               </div>
             </>
           )}

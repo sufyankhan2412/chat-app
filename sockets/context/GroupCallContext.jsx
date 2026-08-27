@@ -8,7 +8,7 @@ import React, {
 } from "react";
 import { useSocket } from "./Socketcontext";
 import { useAuth } from "./Authcontext";
-import { createCallLink, getGroupCallChatHistory } from "../api";
+import { createCallLink, getGroupCallChatHistory, uploadCallAudioChunk } from "../api";
 
 const GroupCallContext = createContext(null);
 
@@ -78,6 +78,16 @@ export function GroupCallProvider({ children }) {
   const modeRef = useRef("video");
   // Map<userId, RTCPeerConnection>
   const pcsRef = useRef(new Map());
+  // My own mic-only MediaRecorder for this join session — see
+  // startRecording below. Calls are mesh WebRTC, so this is the only way
+  // any audio ever reaches the server for transcription purposes; it's
+  // entirely separate from the peer connections above, which just carry
+  // live audio/video directly to the other participants' browsers.
+  const recorderRef = useRef(null);
+  // This join's own SERVER timestamp (from "groupCallJoined"), used to
+  // tag every uploaded chunk so the backend can match it back to the
+  // right Call.participants entry and place it on the shared timeline.
+  const joinedAtRef = useRef(null);
   // Mirrors the server's per-participant read cursor so markChatRead can
   // skip redundant "markCallChatRead" emits once we're already caught up.
   const lastReadMessageIdRef = useRef(null);
@@ -107,6 +117,14 @@ export function GroupCallProvider({ children }) {
       pc.close();
     });
     pcsRef.current = new Map();
+    // Stops the mic-only recorder for this join session — whatever chunks
+    // already uploaded (see startRecording's ondataavailable) stay on the
+    // server; this only ends the session, it doesn't discard anything.
+    if (recorderRef.current && recorderRef.current.state !== "inactive") {
+      recorderRef.current.stop();
+    }
+    recorderRef.current = null;
+    joinedAtRef.current = null;
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((t) => t.stop());
       localStreamRef.current = null;
@@ -192,6 +210,37 @@ export function GroupCallProvider({ children }) {
     },
     [socket]
   );
+
+  // Records MY OWN mic audio (never anyone else's — that never reaches
+  // this browser as a separate track to begin with) for this join
+  // session, uploading small rolling chunks as they're produced rather
+  // than buffering the whole call in memory and sending it at the end.
+  // That matters specifically for the paths that don't go through a
+  // clean leaveCall() — a host removal or a crashed/closed tab — where
+  // incremental upload means only the last few seconds are ever at risk,
+  // not the whole recording. `joinedAt` is the server timestamp from
+  // "groupCallJoined", not a local clock reading (see api.js).
+  const startRecording = useCallback((stream, joinedAt) => {
+    if (!stream || !stream.getAudioTracks().length) return;
+    try {
+      const audioOnly = new MediaStream(stream.getAudioTracks());
+      const recorder = new MediaRecorder(audioOnly, { mimeType: "audio/webm;codecs=opus" });
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0 && roomIdRef.current) {
+          uploadCallAudioChunk(roomIdRef.current, joinedAt, event.data).catch((err) => {
+            console.error("uploadCallAudioChunk error:", err);
+          });
+        }
+      };
+      recorder.start(5000); // 5s rolling chunks
+      recorderRef.current = recorder;
+    } catch (err) {
+      // Recording for transcription is a best-effort add-on to the call
+      // itself — an unsupported codec or similar should never break the
+      // actual call the user is trying to have.
+      console.error("startRecording error:", err);
+    }
+  }, []);
 
   // ---- Generate a shareable link WITHOUT joining yet (used by the "New
   // call" button in the Calls interface — mirrors Meet's "create a
@@ -327,8 +376,20 @@ export function GroupCallProvider({ children }) {
       hostId: joinedHostId,
       chatHistory,
       lastReadMessageId,
+      callStartedAt,
+      joinedAt,
     }) => {
       setHostId(joinedHostId || null);
+
+      // Start recording my own mic for transcription purposes as soon as
+      // the room actually accepts me — callStartedAt/joinedAt are both
+      // server timestamps (see Socketmanager.js), so this stays aligned
+      // with everyone else's recording regardless of each device's own
+      // clock. `callStartedAt` itself isn't needed client-side beyond
+      // this — the merge/offset math happens entirely on the backend
+      // once all participants' audio is uploaded.
+      joinedAtRef.current = joinedAt;
+      startRecording(localStreamRef.current, joinedAt);
 
       // Meeting-level chat: whether this is a first join or a rejoin,
       // the server hands back the same persisted history plus wherever
@@ -459,7 +520,7 @@ export function GroupCallProvider({ children }) {
       socket.off("groupCallError", onGroupCallError);
       socket.off("removedFromCall", onRemovedFromCall);
     };
-  }, [socket, getOrCreatePeerConnection, cleanupPeer, resetAll, user]);
+  }, [socket, getOrCreatePeerConnection, cleanupPeer, resetAll, user, startRecording]);
 
   // Auto-clear transient error banner.
   useEffect(() => {

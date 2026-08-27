@@ -3629,6 +3629,42 @@ button.profile-row-danger:disabled {
   }
 }
 
+.gc-transcript-section {
+  padding-bottom: 12px;
+}
+
+.gc-transcript-download-btn {
+  margin: 4px 24px 0;
+  padding: 9px 16px;
+  border: none;
+  border-radius: 8px;
+  background: #128c7e;
+  color: #fff;
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.gc-transcript-download-btn:hover:not(:disabled) {
+  background: #0f7a6e;
+}
+
+.gc-transcript-download-btn:disabled {
+  opacity: 0.65;
+  cursor: default;
+}
+
+.gc-transcript-note {
+  margin: 4px 24px 0;
+  font-size: 13px;
+  color: #667781;
+}
+
+.gc-transcript-error {
+  color: #e05252;
+}
+
 @media (max-width: 860px) {
   .call-detail-modal {
     width: min(94vw, 400px);

@@ -4,6 +4,7 @@ const Message = require("../models/Message");
 const Call = require("../models/Call");
 const GroupCallMessage = require("../models/Groupcallmessage");
 const { protect } = require("../middleware/Authmiddleware");
+const { uploadCallAudioChunk, appendCallAudioChunk } = require("../middleware/upload");
 
 const router = express.Router();
 
@@ -198,6 +199,108 @@ router.delete("/group/:roomId", protect, async (req, res) => {
       { $addToSet: { deletedFor: req.user._id } }
     );
     res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// @route  POST /api/calls/:roomId/audio-chunk
+// Appends one rolling ~5s chunk of the CALLER'S OWN mic audio for this
+// join session (see GroupCallContext.jsx's MediaRecorder). Calls here are
+// mesh WebRTC, so this is the only way any audio ever reaches the server
+// at all — it never flows through during the call itself. Chunks are
+// appended as they arrive rather than buffered client-side into one
+// upload, so a crash, closed tab, or host removal mid-call only risks
+// losing the last few seconds, not the whole recording. `joinedAt` must
+// be the server timestamp handed back in the "groupCallJoined" socket
+// event (not a client clock reading) — it's what ties this upload to a
+// specific Call.participants entry, checked below.
+router.post(
+  "/:roomId/audio-chunk",
+  protect,
+  uploadCallAudioChunk.single("chunk"),
+  async (req, res) => {
+    try {
+      const { roomId } = req.params;
+      const joinedAt = Number(req.body.joinedAt);
+
+      if (!req.file || !Number.isFinite(joinedAt)) {
+        return res.status(400).json({ message: "Missing audio chunk or joinedAt" });
+      }
+
+      const call = await Call.findOne({ roomId }).select("participants");
+      if (!call) return res.status(404).json({ message: "Call not found" });
+
+      const isThisJoinSession = call.participants.some(
+        (p) => String(p.user) === String(req.user._id) && p.joinedAt.getTime() === joinedAt
+      );
+      if (!isThisJoinSession) {
+        return res.status(403).json({ message: "Not a participant of this call session" });
+      }
+
+      appendCallAudioChunk(roomId, req.user._id, joinedAt, req.file.buffer);
+      res.sendStatus(204);
+    } catch (err) {
+      res.status(500).json({ message: err.message });
+    }
+  }
+);
+
+// @route  GET /api/calls/:roomId/transcript/status
+// Lightweight poll target for the call-detail view while a transcript is
+// still being generated — see enqueueGroupCallTranscription in
+// transcriptionService.js for what flips this from "processing" to
+// "completed"/"failed".
+router.get("/:roomId/transcript/status", protect, async (req, res) => {
+  try {
+    const call = await Call.findOne({ roomId: req.params.roomId }).select(
+      "participants transcript"
+    );
+    if (!call) return res.status(404).json({ message: "Call not found" });
+
+    const wasParticipant = call.participants.some(
+      (p) => String(p.user) === String(req.user._id)
+    );
+    if (!wasParticipant) {
+      return res.status(403).json({ message: "You weren't part of this call" });
+    }
+
+    res.json({
+      status: call.transcript?.status || "not_started",
+      missingParticipants: call.transcript?.missingParticipants || [],
+      error: call.transcript?.status === "failed" ? call.transcript.error : undefined,
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// @route  GET /api/calls/:roomId/transcript
+// Streams the finished .txt transcript. Restricted to people who
+// actually attended this call, same rule as the rest of the group-call
+// log routes above — this file isn't served as a static asset, so there
+// isn't a shortcut around this check.
+router.get("/:roomId/transcript", protect, async (req, res) => {
+  try {
+    const call = await Call.findOne({ roomId: req.params.roomId }).select(
+      "participants transcript"
+    );
+    if (!call) return res.status(404).json({ message: "Call not found" });
+
+    const wasParticipant = call.participants.some(
+      (p) => String(p.user) === String(req.user._id)
+    );
+    if (!wasParticipant) {
+      return res.status(403).json({ message: "You weren't part of this call" });
+    }
+
+    if (call.transcript?.status !== "completed" || !call.transcript.txtPath) {
+      return res
+        .status(409)
+        .json({ message: `Transcript is ${call.transcript?.status || "not_started"}.` });
+    }
+
+    res.download(call.transcript.txtPath, `call-transcript-${req.params.roomId}.txt`);
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

@@ -131,4 +131,31 @@ export const deleteGroupCallLog = (roomId) => api.delete(`/calls/group/${roomId}
 export const getGroupCallChatHistory = (roomId, params = {}) =>
   api.get(`/calls/group/${roomId}/chat`, { params });
 
+// ---- Group-call audio -> transcript ----
+
+// One ~5s rolling chunk of MY OWN mic audio for this call session (see
+// GroupCallContext.jsx's MediaRecorder). `joinedAt` must be the SERVER
+// timestamp from the "groupCallJoined" socket event, not a client clock
+// reading — the backend uses it to match this upload to the right
+// Call.participants entry and to anchor it on the shared call timeline.
+export const uploadCallAudioChunk = (roomId, joinedAt, blob) => {
+  const formData = new FormData();
+  formData.append("joinedAt", joinedAt);
+  formData.append("chunk", blob, `chunk-${Date.now()}.webm`);
+  return api.post(`/calls/${roomId}/audio-chunk`, formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+};
+
+// Poll target while a transcript is being generated —
+// { status, missingParticipants, error? }.
+export const getTranscriptStatus = (roomId) =>
+  api.get(`/calls/${roomId}/transcript/status`);
+
+// Fetches the finished .txt as a Blob (auth'd, so a plain <a href> to the
+// API URL wouldn't carry the Bearer token) — the caller turns this into
+// a download via URL.createObjectURL.
+export const downloadTranscript = (roomId) =>
+  api.get(`/calls/${roomId}/transcript`, { responseType: "blob" });
+
 export default api;

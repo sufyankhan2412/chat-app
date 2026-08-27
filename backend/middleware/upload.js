@@ -82,4 +82,64 @@ const uploadAttachment = multer({
   limits: { fileSize: 25 * 1024 * 1024 }, // 25MB — covers photos, voice notes, short videos, most docs
 });
 
-module.exports = { uploadAvatar, avatarsDir, uploadAttachment, attachmentsDir };
+// ---------------------------------------------------------------------
+// Group-call audio, one file per (roomId, userId, join session) — see
+// backend/services/transcriptionService.js for how these get turned into
+// a transcript. Calls in this app are mesh WebRTC (GroupCallContext.jsx),
+// so audio never otherwise reaches this server; each participant's own
+// browser records its own mic locally and uploads small rolling chunks
+// here as the call happens, rather than one file at the end. Chunks are
+// appended onto the same on-disk file as they arrive, so a crash, closed
+// tab, or host removal mid-call only risks losing the last few seconds,
+// not the whole recording.
+// ---------------------------------------------------------------------
+const callAudioDir = path.join(__dirname, "..", "uploads", "call-audio");
+fs.mkdirSync(callAudioDir, { recursive: true });
+
+const callAudioFileFilter = (req, file, cb) => {
+  if (!file.mimetype.startsWith("audio/")) {
+    return cb(new Error("Only audio uploads are allowed for call recordings"));
+  }
+  cb(null, true);
+};
+
+// Buffered in memory (chunks are ~5s of Opus audio, a few hundred KB at
+// most) rather than written straight to disk by multer, since we need to
+// APPEND each chunk onto the same per-join file ourselves — see
+// appendCallAudioChunk below.
+const uploadCallAudioChunk = multer({
+  storage: multer.memoryStorage(),
+  fileFilter: callAudioFileFilter,
+  limits: { fileSize: 2 * 1024 * 1024 }, // 2MB is generous for a 5s Opus chunk
+});
+
+// Appends one uploaded chunk's bytes onto
+// uploads/call-audio/<roomId>/<userId>-<joinedAtMs>.webm, creating the
+// room's folder and the file itself on the session's first chunk.
+// `joinedAtMs` is the SERVER's timestamp for this specific join (handed
+// to the client in the "groupCallJoined" socket event, not read off the
+// client's own clock) — it's what lets transcriptionService.js match this
+// file back to the exact Call.participants entry it belongs to, and what
+// anchors this speaker's segments onto the shared call timeline.
+//
+// Successive MediaRecorder chunks from one continuous recording session
+// concatenate into a valid WebM file (they're all part of the same
+// encoded stream, just delivered incrementally) — no re-muxing needed
+// before handing the result to a transcription engine.
+function appendCallAudioChunk(roomId, userId, joinedAtMs, buffer) {
+  const dir = path.join(callAudioDir, String(roomId));
+  fs.mkdirSync(dir, { recursive: true });
+  const filePath = path.join(dir, `${userId}-${joinedAtMs}.webm`);
+  fs.appendFileSync(filePath, buffer);
+  return filePath;
+}
+
+module.exports = {
+  uploadAvatar,
+  avatarsDir,
+  uploadAttachment,
+  attachmentsDir,
+  uploadCallAudioChunk,
+  appendCallAudioChunk,
+  callAudioDir,
+};
