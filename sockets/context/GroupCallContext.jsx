@@ -84,6 +84,11 @@ export function GroupCallProvider({ children }) {
   // entirely separate from the peer connections above, which just carry
   // live audio/video directly to the other participants' browsers.
   const recorderRef = useRef(null);
+  // This join session's next chunk ordinal — tagged onto every uploaded
+  // chunk so the server can reassemble them in the order they were
+  // recorded, not the order the uploads happen to arrive in. See
+  // startRecording and upload.js's saveCallAudioChunk.
+  const chunkSeqRef = useRef(0);
   // This join's own SERVER timestamp (from "groupCallJoined"), used to
   // tag every uploaded chunk so the backend can match it back to the
   // right Call.participants entry and place it on the shared timeline.
@@ -225,9 +230,11 @@ export function GroupCallProvider({ children }) {
     try {
       const audioOnly = new MediaStream(stream.getAudioTracks());
       const recorder = new MediaRecorder(audioOnly, { mimeType: "audio/webm;codecs=opus" });
+      chunkSeqRef.current = 0;
       recorder.ondataavailable = (event) => {
         if (event.data && event.data.size > 0 && roomIdRef.current) {
-          uploadCallAudioChunk(roomIdRef.current, joinedAt, event.data).catch((err) => {
+          const seq = chunkSeqRef.current++;
+          uploadCallAudioChunk(roomIdRef.current, joinedAt, seq, event.data).catch((err) => {
             console.error("uploadCallAudioChunk error:", err);
           });
         }

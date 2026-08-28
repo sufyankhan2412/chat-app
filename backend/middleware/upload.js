@@ -113,24 +113,38 @@ const uploadCallAudioChunk = multer({
   limits: { fileSize: 2 * 1024 * 1024 }, // 2MB is generous for a 5s Opus chunk
 });
 
-// Appends one uploaded chunk's bytes onto
-// uploads/call-audio/<roomId>/<userId>-<joinedAtMs>.webm, creating the
-// room's folder and the file itself on the session's first chunk.
-// `joinedAtMs` is the SERVER's timestamp for this specific join (handed
-// to the client in the "groupCallJoined" socket event, not read off the
-// client's own clock) — it's what lets transcriptionService.js match this
-// file back to the exact Call.participants entry it belongs to, and what
-// anchors this speaker's segments onto the shared call timeline.
+// Saves one uploaded chunk as its own file:
+// uploads/call-audio/<roomId>/<userId>-<joinedAtMs>-<seq>.webm, creating
+// the room's folder on the session's first chunk. `joinedAtMs` is the
+// SERVER's timestamp for this specific join (handed to the client in the
+// "groupCallJoined" socket event, not read off the client's own clock) —
+// it's what lets transcriptionService.js match this file back to the
+// exact Call.participants entry it belongs to, and what anchors this
+// speaker's segments onto the shared call timeline. `seq` is the
+// per-join-session, client-assigned ordinal of this chunk (0, 1, 2, ...).
 //
-// Successive MediaRecorder chunks from one continuous recording session
-// concatenate into a valid WebM file (they're all part of the same
-// encoded stream, just delivered incrementally) — no re-muxing needed
-// before handing the result to a transcription engine.
-function appendCallAudioChunk(roomId, userId, joinedAtMs, buffer) {
+// IMPORTANT: we do NOT append chunks onto one shared file anymore. Each
+// chunk arrives over its own independent HTTP request, and multiple
+// uploads for the same join session are in flight concurrently (the
+// client doesn't wait for one to finish before sending the next) — so
+// they can land at the server, and therefore get appended, in a
+// different order than they were recorded in. A few out-of-order Opus
+// blocks silently corrupts the WebM stream: ffmpeg/whisper can often
+// still "open" the file but decode little or no usable audio out of it,
+// which is exactly the "no speech was transcribed" symptom with no
+// error ever being thrown. Writing each chunk to its own file — named so
+// it sorts/parses back into the right order — lets
+// transcriptionService.js reassemble them in the CORRECT (recorded)
+// order at transcription time, regardless of upload arrival order.
+function saveCallAudioChunk(roomId, userId, joinedAtMs, seq, buffer) {
   const dir = path.join(callAudioDir, String(roomId));
   fs.mkdirSync(dir, { recursive: true });
-  const filePath = path.join(dir, `${userId}-${joinedAtMs}.webm`);
-  fs.appendFileSync(filePath, buffer);
+  const seqPadded = String(seq).padStart(6, "0");
+  const filePath = path.join(dir, `${userId}-${joinedAtMs}-${seqPadded}.webm`);
+  // writeFileSync (not append): each chunk is its own file, and this
+  // also makes a client retry of the same chunk idempotent instead of
+  // duplicating bytes.
+  fs.writeFileSync(filePath, buffer);
   return filePath;
 }
 
@@ -140,6 +154,6 @@ module.exports = {
   uploadAttachment,
   attachmentsDir,
   uploadCallAudioChunk,
-  appendCallAudioChunk,
+  saveCallAudioChunk,
   callAudioDir,
 };

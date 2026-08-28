@@ -138,10 +138,16 @@ export const getGroupCallChatHistory = (roomId, params = {}) =>
 // timestamp from the "groupCallJoined" socket event, not a client clock
 // reading — the backend uses it to match this upload to the right
 // Call.participants entry and to anchor it on the shared call timeline.
-export const uploadCallAudioChunk = (roomId, joinedAt, blob) => {
+export const uploadCallAudioChunk = (roomId, joinedAt, seq, blob) => {
   const formData = new FormData();
   formData.append("joinedAt", joinedAt);
-  formData.append("chunk", blob, `chunk-${Date.now()}.webm`);
+  // `seq` is this join session's chunk ordinal (0, 1, 2, ...), assigned
+  // client-side in recording order. Chunk uploads race each other over
+  // the network and can land out of order — the server uses `seq` to put
+  // them back in the right order before transcribing, instead of trusting
+  // arrival order.
+  formData.append("seq", seq);
+  formData.append("chunk", blob, `chunk-${seq}.webm`);
   return api.post(`/calls/${roomId}/audio-chunk`, formData, {
     headers: { "Content-Type": "multipart/form-data" },
   });

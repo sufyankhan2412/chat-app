@@ -4,7 +4,7 @@ const Message = require("../models/Message");
 const Call = require("../models/Call");
 const GroupCallMessage = require("../models/Groupcallmessage");
 const { protect } = require("../middleware/Authmiddleware");
-const { uploadCallAudioChunk, appendCallAudioChunk } = require("../middleware/upload");
+const { uploadCallAudioChunk, saveCallAudioChunk } = require("../middleware/upload");
 
 const router = express.Router();
 
@@ -223,9 +223,10 @@ router.post(
     try {
       const { roomId } = req.params;
       const joinedAt = Number(req.body.joinedAt);
+      const seq = Number(req.body.seq);
 
-      if (!req.file || !Number.isFinite(joinedAt)) {
-        return res.status(400).json({ message: "Missing audio chunk or joinedAt" });
+      if (!req.file || !Number.isFinite(joinedAt) || !Number.isFinite(seq)) {
+        return res.status(400).json({ message: "Missing audio chunk, joinedAt, or seq" });
       }
 
       const call = await Call.findOne({ roomId }).select("participants");
@@ -238,7 +239,7 @@ router.post(
         return res.status(403).json({ message: "Not a participant of this call session" });
       }
 
-      appendCallAudioChunk(roomId, req.user._id, joinedAt, req.file.buffer);
+      saveCallAudioChunk(roomId, req.user._id, joinedAt, seq, req.file.buffer);
       res.sendStatus(204);
     } catch (err) {
       res.status(500).json({ message: err.message });

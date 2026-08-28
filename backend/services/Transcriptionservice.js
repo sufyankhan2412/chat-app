@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const { execFile } = require("child_process");
+const ffmpegPath = require("ffmpeg-static");
 const Call = require("../models/Call");
 const { callAudioDir } = require("../middleware/upload");
 
@@ -13,20 +14,80 @@ fs.mkdirSync(TRANSCRIPTS_DIR, { recursive: true });
 // comment below for what shape it needs to return).
 const WHISPER_CLI = process.env.WHISPER_CLI_PATH || "whisper-cli";
 
+// Absolute path to the ggml model file whisper-cli should load. This
+// MUST be set — whisper-cli's own default ("models/ggml-base.en.bin")
+// is resolved relative to whatever directory the process is launched
+// from, which for this backend is never whisper.cpp's own folder, so
+// the built-in default reliably fails with "failed to open
+// 'models/ggml-base.en.bin'" / "failed to initialize whisper context"
+// no matter what audio is passed in. Passing an absolute path via -m
+// removes that dependency on cwd entirely.
+const WHISPER_MODEL_PATH = process.env.WHISPER_MODEL_PATH;
+if (!WHISPER_MODEL_PATH) {
+  console.warn(
+    "[Transcriptionservice] WHISPER_MODEL_PATH is not set — every " +
+      "transcription will fail with 'failed to initialize whisper " +
+      "context'. Set it to the absolute path of a ggml-*.bin model file."
+  );
+}
+
 // ---------------------------------------------------------------------
-// Filenames look like "<userId>-<joinedAtMs>.webm" (written by
-// appendCallAudioChunk in middleware/upload.js). We split on the LAST
-// "-" rather than the first, since joinedAtMs is always purely numeric
-// and userId (a Mongo ObjectId) never contains one — this is just a
-// little more defensive than assuming ObjectIds are always hyphen-free.
+// Filenames look like "<userId>-<joinedAtMs>-<seq>.webm" (written by
+// saveCallAudioChunk in middleware/upload.js) — one file PER uploaded
+// chunk, not one growing file per join session. `seq` is the chunk's
+// recorded order; it's what lets us glue chunks back together correctly
+// even though they may have arrived at the server out of order (see
+// upload.js for why that happens). We take the FIRST "-" to split off
+// userId (a Mongo ObjectId, which never contains a "-") and the LAST
+// "-" to split off seq, leaving joinedAtMs in the middle.
 // ---------------------------------------------------------------------
-function parseAudioFilename(filename) {
+function parseAudioChunkFilename(filename) {
   const base = filename.replace(/\.webm$/i, "");
-  const idx = base.lastIndexOf("-");
-  if (idx === -1) return null;
-  const joinedAtMs = Number(base.slice(idx + 1));
-  if (!Number.isFinite(joinedAtMs)) return null;
-  return { userId: base.slice(0, idx), joinedAtMs };
+  const firstIdx = base.indexOf("-");
+  const lastIdx = base.lastIndexOf("-");
+  if (firstIdx === -1 || lastIdx === firstIdx) return null;
+  const userId = base.slice(0, firstIdx);
+  const joinedAtMs = Number(base.slice(firstIdx + 1, lastIdx));
+  const seq = Number(base.slice(lastIdx + 1));
+  if (!Number.isFinite(joinedAtMs) || !Number.isFinite(seq)) return null;
+  return { userId, joinedAtMs, seq };
+}
+
+// Runs one audio file through the transcription engine and returns
+// [{ start, end, text }] with start/end in seconds, relative to the
+// start of THIS file (i.e. relative to when this one join session's
+// recording began — the caller is responsible for offsetting these onto
+// the shared call timeline). Swap this function out to use a different
+// engine (e.g. a small faster-whisper Python subprocess) as long as it
+// keeps returning that same shape.
+// whisper-cli reads audio through miniaudio, which can decode WAV, MP3,
+// FLAC, and OGG Vorbis — but NOT the WebM/Opus container that the
+// browser's MediaRecorder produces (confirmed by whisper-cli itself:
+// "read_audio_data: trying to decode with miniaudio" / "failed to read
+// audio data"). So every .webm this app produces needs to be converted
+// to a plain 16kHz mono WAV file before whisper-cli can read it at all —
+// this has nothing to do with chunk ordering or the model path; without
+// this conversion, transcription was never going to succeed on ANY
+// recording, regardless of how clean the audio itself is.
+function convertToWav(webmPath) {
+  return new Promise((resolve, reject) => {
+    const wavPath = webmPath.replace(/\.webm$/i, ".wav");
+    execFile(
+      ffmpegPath,
+      [
+        "-y", // overwrite if it already exists (safe to re-run)
+        "-i", webmPath,
+        "-ar", "16000", // 16kHz — what whisper.cpp models expect
+        "-ac", "1", // mono
+        "-c:a", "pcm_s16le", // plain PCM, which miniaudio can always read
+        wavPath,
+      ],
+      (err) => {
+        if (err) return reject(err);
+        resolve(wavPath);
+      }
+    );
+  });
 }
 
 // Runs one audio file through the transcription engine and returns
@@ -38,23 +99,30 @@ function parseAudioFilename(filename) {
 // keeps returning that same shape.
 function transcribeFile(filePath) {
   return new Promise((resolve, reject) => {
-    const outBase = filePath.replace(/\.webm$/i, "");
-    execFile(WHISPER_CLI, ["-f", filePath, "-oj", "-of", outBase, "-nt"], (err) => {
-      if (err) return reject(err);
-      try {
-        const raw = JSON.parse(fs.readFileSync(`${outBase}.json`, "utf8"));
-        const segments = (raw.transcription || [])
-          .map((seg) => ({
-            start: (seg.offsets?.from ?? 0) / 1000,
-            end: (seg.offsets?.to ?? 0) / 1000,
-            text: (seg.text || "").trim(),
-          }))
-          .filter((seg) => seg.text.length > 0);
-        resolve(segments);
-      } catch (parseErr) {
-        reject(parseErr);
+    if (!WHISPER_MODEL_PATH) {
+      return reject(new Error("WHISPER_MODEL_PATH is not set"));
+    }
+    const outBase = filePath.replace(/\.(webm|wav)$/i, "");
+    execFile(
+      WHISPER_CLI,
+      ["-f", filePath, "-m", WHISPER_MODEL_PATH, "-oj", "-of", outBase, "-nt"],
+      (err) => {
+        if (err) return reject(err);
+        try {
+          const raw = JSON.parse(fs.readFileSync(`${outBase}.json`, "utf8"));
+          const segments = (raw.transcription || [])
+            .map((seg) => ({
+              start: (seg.offsets?.from ?? 0) / 1000,
+              end: (seg.offsets?.to ?? 0) / 1000,
+              text: (seg.text || "").trim(),
+            }))
+            .filter((seg) => seg.text.length > 0);
+          resolve(segments);
+        } catch (parseErr) {
+          reject(parseErr);
+        }
       }
-    });
+    );
   });
 }
 
@@ -156,28 +224,48 @@ async function enqueueGroupCallTranscription(roomId, io) {
   try {
     const audioDir = path.join(callAudioDir, roomId);
     const files = fs.existsSync(audioDir)
-      ? fs.readdirSync(audioDir).filter((f) => f.endsWith(".webm"))
+      ? fs.readdirSync(audioDir).filter((f) => f.endsWith(".webm") && !f.includes(".combined."))
       : [];
 
-    const coveredJoins = new Set(); // `${userId}-${joinedAtMs}` that had at least one file
+    // Group this room's chunk files by join session (userId + joinedAtMs)
+    // so every chunk from one MediaRecorder session gets glued back into
+    // ONE file, in the order it was actually recorded — never in
+    // whatever order the uploads happened to land at the server in.
+    const sessions = new Map(); // `${userId}-${joinedAtMs}` -> [{ seq, file }]
+    files.forEach((file) => {
+      const parsed = parseAudioChunkFilename(file);
+      if (!parsed) return;
+      const key = `${parsed.userId}-${parsed.joinedAtMs}`;
+      if (!sessions.has(key)) sessions.set(key, []);
+      sessions.get(key).push({ seq: parsed.seq, file, ...parsed });
+    });
 
-    const jobs = files.map(async (file) => {
-      const parsed = parseAudioFilename(file);
-      if (!parsed) return [];
+    const coveredJoins = new Set(); // `${userId}-${joinedAtMs}` that had at least one chunk
+
+    const jobs = [...sessions.entries()].map(async ([key, chunks]) => {
+      chunks.sort((a, b) => a.seq - b.seq);
+      const { userId, joinedAtMs } = chunks[0];
 
       const entry = call.participants.find(
-        (p) =>
-          String(p.user?._id || p.user) === parsed.userId &&
-          p.joinedAt.getTime() === parsed.joinedAtMs
+        (p) => String(p.user?._id || p.user) === userId && p.joinedAt.getTime() === joinedAtMs
       );
-      if (!entry) return []; // stray/unmatched file — ignore rather than guess
+      if (!entry) return []; // stray/unmatched session — ignore rather than guess
 
-      coveredJoins.add(`${parsed.userId}-${parsed.joinedAtMs}`);
+      coveredJoins.add(key);
       const speakerName = entry.user?.username || "Unknown";
-      const offsetSec = (parsed.joinedAtMs - call.startedAt.getTime()) / 1000;
+      const offsetSec = (joinedAtMs - call.startedAt.getTime()) / 1000;
+
+      // Glue this session's chunks together, in RECORDED (seq) order, into
+      // one valid WebM file...
+      const combinedPath = path.join(audioDir, `${key}.combined.webm`);
+      const buffers = chunks.map((c) => fs.readFileSync(path.join(audioDir, c.file)));
+      fs.writeFileSync(combinedPath, Buffer.concat(buffers));
 
       try {
-        const rawSegments = await transcribeFile(path.join(audioDir, file));
+        // ...then convert it to WAV, since whisper-cli can't read
+        // WebM/Opus directly (see convertToWav's comment above).
+        const wavPath = await convertToWav(combinedPath);
+        const rawSegments = await transcribeFile(wavPath);
         return rawSegments.map((s) => ({
           speaker: speakerName,
           start: offsetSec + s.start,
@@ -185,7 +273,7 @@ async function enqueueGroupCallTranscription(roomId, io) {
           text: s.text,
         }));
       } catch (err) {
-        console.error(`Transcription failed for ${file}:`, err.message);
+        console.error(`Transcription failed for join session ${key}:`, err.stack || err.message || err);
         return [];
       }
     });
