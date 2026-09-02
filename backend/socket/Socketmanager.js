@@ -115,6 +115,92 @@ async function logCall(io, { callerId, calleeId, callType, status, startedAt }) 
   }
 }
 
+// ---------------------------------------------------------------------
+// 1:1 call transcription. Previously only link-based/group calls (the
+// `Call` model + joinCallRoom/leaveCallRoom below) ever got a `Call`
+// document, an audio recording, or a transcript — a plain 1:1 audio/video
+// call just wrote a single-line "call" Message and nothing else ever
+// recorded any audio for it. But a direct call is really just a "room"
+// with exactly two participants who both join the instant it connects, so
+// it can reuse the EXACT SAME machinery group calls already use: a `Call`
+// document with a roomId, two `participants` entries (both with the same
+// joinedAt, since both sides start recording the moment the call is
+// answered), each side's own MediaRecorder uploading chunks tagged with
+// that roomId/joinedAt (see Callcontext.jsx), and the same
+// transcriptionService.js merge job at the end. Nothing in the model,
+// upload route, or transcription service needed to change for this —
+// they were already written generically per-roomId.
+//
+// Called once a direct call actually connects (see "answerCall" below).
+// Best-effort: if this fails, the call itself is already connected and
+// keeps going — recording/transcription is an add-on, never a
+// precondition for the call working.
+async function startDirectCallRecording(io, meta) {
+  try {
+    const roomId = crypto.randomUUID();
+    const joinedAt = new Date();
+    const call = await Call.create({
+      roomId,
+      initiator: meta.callerId,
+      callType: meta.callType,
+      status: "ongoing",
+      participants: [
+        { user: meta.callerId, mode: meta.callType, joinedAt },
+        { user: meta.calleeId, mode: meta.callType, joinedAt },
+      ],
+    });
+
+    meta.roomId = call.roomId;
+    meta.recordingJoinedAtMs = joinedAt.getTime();
+
+    // Both sides get the same roomId/joinedAt so their uploaded chunks
+    // land tagged identically to how a group-call join would tag them —
+    // transcriptionService.js can't tell (and doesn't need to know) that
+    // this "room" only ever had two people in it.
+    const payload = { roomId: call.roomId, joinedAt: joinedAt.getTime() };
+    io.to(getUserRoomName(meta.callerId)).emit("callSessionStarted", payload);
+    io.to(getUserRoomName(meta.calleeId)).emit("callSessionStarted", payload);
+  } catch (err) {
+    console.error("startDirectCallRecording error:", err.message);
+  }
+}
+
+// Seals a direct call's recording session (if one was started — see
+// startDirectCallRecording) and schedules the same transcription job group
+// calls use. Safe to call on any call end path (normal hangup, upgrade to
+// group, or a dropped connection) since it's a no-op when `meta.roomId`
+// was never set, i.e. the call never actually connected.
+function finalizeDirectCallRecording(io, meta) {
+  if (!meta?.roomId) return;
+  const roomId = meta.roomId;
+  const leftAt = new Date();
+  const duration = Math.max(0, Math.round((leftAt.getTime() - meta.recordingJoinedAtMs) / 1000));
+
+  // Single atomic update — both participants share the same joinedAt, so
+  // `$[]` (every array element) is exactly the two of them, no arrayFilter
+  // needed. No prior read/save race to worry about since nothing else ever
+  // mutates a direct call's `participants` after startDirectCallRecording
+  // created it.
+  Call.updateOne(
+    { roomId },
+    {
+      $set: {
+        status: "ended",
+        endedAt: leftAt,
+        "participants.$[].leftAt": leftAt,
+        "participants.$[].duration": duration,
+      },
+    }
+  )
+    .then(() => {
+      setTimeout(
+        () => enqueueGroupCallTranscription(roomId, io),
+        TRANSCRIPTION_START_DELAY_MS
+      );
+    })
+    .catch((err) => console.error(`finalizeDirectCallRecording(${roomId}) error:`, err.message));
+}
+
 function initSocket(io) {
   // Socket-level auth middleware: verifies the JWT sent from the client
   io.use((socket, next) => {
@@ -349,6 +435,12 @@ try {
       const meta = callLogMeta.get(getRoomName(userId, callerId));
       if (meta) meta.answeredAt = Date.now();
       io.to(getUserRoomName(callerId)).emit("callAnswered", { answer });
+
+      // The call is connected now — start recording both sides' audio for
+      // transcription, exactly like a group call room does the moment
+      // someone joins. See startDirectCallRecording's comment for why this
+      // reuses the group-call pipeline unchanged.
+      if (meta) startDirectCallRecording(io, meta);
     });
 
     // Either side, any time during setup or the call: forward ICE candidates.
@@ -414,6 +506,7 @@ try {
           status: meta.answeredAt ? "completed" : "missed",
           startedAt: meta.answeredAt,
         });
+        finalizeDirectCallRecording(io, meta);
       }
       if (!targetId) return;
       io.to(getUserRoomName(targetId)).emit("callEnded", {});
@@ -452,6 +545,13 @@ try {
           status: "completed",
           startedAt: meta.answeredAt,
         });
+        // Seal and queue transcription for the 1:1 portion of the
+        // conversation that happened before this upgrade — otherwise that
+        // audio/Call document would be left "ongoing" forever, and that
+        // part of the conversation would never get transcribed. The
+        // brand-new group room created just below gets its own separate
+        // recording session once people join it.
+        finalizeDirectCallRecording(io, meta);
 
         const roomId = crypto.randomUUID();
         const call = await Call.create({
@@ -496,12 +596,6 @@ try {
       if (!roomId) return;
 
       try {
-        const call = await Call.findOne({ roomId });
-        if (!call || call.status === "ended") {
-          socket.emit("groupCallError", { message: "This call link is invalid or has ended." });
-          return;
-        }
-
         if (!groupCallRooms.has(roomId)) {
           groupCallRooms.set(roomId, new Map());
         }
@@ -510,8 +604,13 @@ try {
         // Existing peers, sent back to the joiner so *they* initiate the
         // offer to each one already in the room (new peer always offers to
         // existing peers — avoids both sides racing to create an offer).
+        // This read + the room.set() right below it are the only two lines
+        // that touch the in-memory room map, and there's no `await` between
+        // them, so — since a single Node process handles all sockets on one
+        // thread — no other "joinCallRoom" call can interleave here and see
+        // a half-updated room. That's what keeps two near-simultaneous
+        // joiners (see below) from missing each other's "peerJoined" event.
         const existingPeers = Array.from(room.entries()).map(([uid]) => uid);
-
         room.set(userKey, socket.id);
         socket.join(getGroupCallRoomName(roomId));
         socket.data.activeCallRoom = roomId;
@@ -523,12 +622,35 @@ try {
         // transcriptionService.js match an uploaded file back to the
         // right join session.
         const joinedAt = new Date();
-        call.participants.push({
-          user: userId,
-          mode,
-          joinedAt,
-        });
-        await call.save();
+
+        // IMPORTANT: this used to be `Call.findOne` + `call.participants.push()`
+        // + `call.save()`. Two people joining the same room within
+        // milliseconds of each other — exactly what happens right after a
+        // 1:1 call is upgraded to a group call, since BOTH sides auto-join
+        // the instant they receive "callUpgraded" — would each fetch their
+        // own copy of the document, push to it in memory, and save it back.
+        // Mongoose's optimistic-concurrency versioning (`__v`) means
+        // whichever save() lands second fails with a VersionError (the
+        // document had already changed underneath it since it was read),
+        // so the second participant's join was silently dropped — the
+        // "adding more people creates a bug" symptom. A single atomic
+        // `$push` has no read-modify-write step, so there's nothing left
+        // for concurrent joins to race on.
+        const call = await Call.findOneAndUpdate(
+          { roomId, status: { $ne: "ended" } },
+          { $push: { participants: { user: userId, mode, joinedAt } } },
+          { new: true }
+        );
+        if (!call) {
+          // Roll back the in-memory membership we optimistically added
+          // above — the room/link turned out to be invalid or already
+          // ended, so this socket never actually joined.
+          room.delete(userKey);
+          socket.leave(getGroupCallRoomName(roomId));
+          socket.data.activeCallRoom = null;
+          socket.emit("groupCallError", { message: "This call link is invalid or has ended." });
+          return;
+        }
 
         // Meeting-level chat: the room's chat belongs to the roomId, not
         // to this join. Whether this is the first time joining or a
@@ -658,7 +780,13 @@ try {
       if (String(targetUserId) === userKey) return;
 
       try {
-        const call = await Call.findOne({ roomId });
+        // Read-only lookup, just to check permissions — the actual
+        // leftAt/duration and status changes below are done as targeted
+        // atomic updates (never a full `call.save()`), so this being
+        // slightly stale by the time they run isn't a problem, unlike the
+        // old fetch-mutate-save pattern (see joinCallRoom's comment above
+        // for why that could silently drop a concurrent update).
+        const call = await Call.findOne({ roomId }).select("initiator participants");
         if (!call) return;
         if (String(call.initiator) !== userKey) {
           socket.emit("groupCallError", {
@@ -678,22 +806,39 @@ try {
         const targetEntry = [...call.participants]
           .reverse()
           .find((p) => String(p.user) === targetKey && !p.leftAt);
+
+        const roomNowEmpty = room.size === 0;
+        if (roomNowEmpty) groupCallRooms.delete(roomId);
+
         if (targetEntry) {
-          targetEntry.leftAt = new Date();
-          targetEntry.duration = Math.max(
-            0,
-            Math.round((targetEntry.leftAt - targetEntry.joinedAt) / 1000)
+          const leftAt = new Date();
+          const duration = Math.max(0, Math.round((leftAt - targetEntry.joinedAt) / 1000));
+          // Atomic, targeted update on exactly this participant's
+          // sub-document (matched by user + joinedAt, which is unique per
+          // join session) — no read-modify-write race with anyone else's
+          // concurrent join/leave on the same Call document.
+          await Call.updateOne(
+            {
+              roomId,
+              "participants.user": targetEntry.user,
+              "participants.joinedAt": targetEntry.joinedAt,
+            },
+            {
+              $set: {
+                "participants.$.leftAt": leftAt,
+                "participants.$.duration": duration,
+                ...(roomNowEmpty ? { status: "ended", endedAt: leftAt } : {}),
+              },
+            }
+          );
+        } else if (roomNowEmpty) {
+          await Call.updateOne(
+            { roomId },
+            { $set: { status: "ended", endedAt: new Date() } }
           );
         }
 
-        if (room.size === 0) {
-          call.status = "ended";
-          call.endedAt = new Date();
-          groupCallRooms.delete(roomId);
-        }
-        await call.save();
-
-        if (call.status === "ended") {
+        if (roomNowEmpty) {
           setTimeout(
             () => enqueueGroupCallTranscription(roomId, io),
             TRANSCRIPTION_START_DELAY_MS
@@ -725,30 +870,47 @@ try {
       socket.data.activeCallRoom = null;
 
       try {
-        const call = await Call.findOne({ roomId });
+        const call = await Call.findOne({ roomId }).select("participants");
         if (call) {
           const entry = [...call.participants]
             .reverse()
             .find((p) => String(p.user) === userKey && !p.leftAt);
-          if (entry) {
-            entry.leftAt = new Date();
-            entry.duration = Math.max(
-              0,
-              Math.round((entry.leftAt - entry.joinedAt) / 1000)
-            );
-          }
 
           // Last person out seals the log — no room to re-enter, no
           // lingering "ongoing" call left behind.
-          if (room.size === 0) {
-            call.status = "ended";
-            call.endedAt = new Date();
-            groupCallRooms.delete(roomId);
+          const roomNowEmpty = room.size === 0;
+          if (roomNowEmpty) groupCallRooms.delete(roomId);
+
+          // Same atomic, targeted updates as removeParticipant above —
+          // never a full `call.save()`, so a concurrent join/leave on this
+          // same room (e.g. right after a 1:1-to-group upgrade, where
+          // several "joinCallRoom"/"leaveCallRoom" calls can land within
+          // milliseconds of each other) can't silently clobber this one.
+          if (entry) {
+            const leftAt = new Date();
+            const duration = Math.max(0, Math.round((leftAt - entry.joinedAt) / 1000));
+            await Call.updateOne(
+              {
+                roomId,
+                "participants.user": entry.user,
+                "participants.joinedAt": entry.joinedAt,
+              },
+              {
+                $set: {
+                  "participants.$.leftAt": leftAt,
+                  "participants.$.duration": duration,
+                  ...(roomNowEmpty ? { status: "ended", endedAt: leftAt } : {}),
+                },
+              }
+            );
+          } else if (roomNowEmpty) {
+            await Call.updateOne(
+              { roomId },
+              { $set: { status: "ended", endedAt: new Date() } }
+            );
           }
 
-          await call.save();
-
-          if (call.status === "ended") {
+          if (roomNowEmpty) {
             setTimeout(
               () => enqueueGroupCallTranscription(roomId, io),
               TRANSCRIPTION_START_DELAY_MS
@@ -806,6 +968,7 @@ if (userSockets.size === 0) {
         status: meta.answeredAt ? "completed" : "missed",
         startedAt: meta.answeredAt,
       });
+      finalizeDirectCallRecording(io, meta);
     }
     io.to(getUserRoomName(otherUserId)).emit("callEnded", {
       reason: "disconnected",

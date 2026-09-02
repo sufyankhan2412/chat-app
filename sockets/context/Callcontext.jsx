@@ -8,7 +8,7 @@ import React, {
 } from "react";
 import { useSocket } from "./Socketcontext";
 import { useAuth } from "./Authcontext";
-import { getUserProfile } from "../api";
+import { getUserProfile, uploadCallAudioChunk } from "../api";
 
 const CallContext = createContext(null);
 
@@ -80,6 +80,18 @@ export function CallProvider({ children }) {
   const pendingOfferRef = useRef(null); // { from, offer, callType } while ringing
   const pendingCandidatesRef = useRef([]); // ICE candidates that arrive before remote description is set
 
+  // My own mic-only MediaRecorder for this 1:1 call, for transcription —
+  // same mechanism GroupCallContext.jsx uses for group calls, now reused
+  // here so a plain 1:1 audio/video call gets transcribed too. The server
+  // only tells us to start (via "callSessionStarted", once both sides are
+  // actually connected — see Socketmanager.js's startDirectCallRecording)
+  // after it has created a `Call` document with a roomId for this call,
+  // exactly like a group-call room.
+  const recorderRef = useRef(null);
+  const chunkSeqRef = useRef(0);
+  const callRoomIdRef = useRef(null);
+  const callJoinedAtRef = useRef(null);
+
   const resetCallState = useCallback(() => {
     if (pcRef.current) {
       pcRef.current.onicecandidate = null;
@@ -92,6 +104,16 @@ export function CallProvider({ children }) {
       localStreamRef.current.getTracks().forEach((track) => track.stop());
       localStreamRef.current = null;
     }
+    // Stops the mic-only recorder for this call — whatever chunks already
+    // uploaded (see startRecording's ondataavailable below) stay on the
+    // server and still get transcribed; this only ends the session.
+    if (recorderRef.current && recorderRef.current.state !== "inactive") {
+      recorderRef.current.stop();
+    }
+    recorderRef.current = null;
+    callRoomIdRef.current = null;
+    callJoinedAtRef.current = null;
+    chunkSeqRef.current = 0;
     pendingOfferRef.current = null;
     pendingCandidatesRef.current = [];
 
@@ -133,6 +155,38 @@ export function CallProvider({ children }) {
     },
     [socket]
   );
+
+  // Records MY OWN mic audio (never the remote party's — that never
+  // reaches this browser as a separate track) for this call, uploading
+  // small rolling chunks as they're produced. Identical mechanism and
+  // upload endpoint to GroupCallContext.jsx's group-call recording — the
+  // backend's transcription pipeline is generic per-roomId and doesn't
+  // distinguish a 1:1 call's "room" (exactly two participants) from a
+  // group call's. `joinedAt` is the SERVER timestamp from
+  // "callSessionStarted", not a local clock reading.
+  const startRecording = useCallback((stream, roomId, joinedAt) => {
+    if (!stream || !stream.getAudioTracks().length) return;
+    try {
+      const audioOnly = new MediaStream(stream.getAudioTracks());
+      const recorder = new MediaRecorder(audioOnly, { mimeType: "audio/webm;codecs=opus" });
+      chunkSeqRef.current = 0;
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0 && callRoomIdRef.current) {
+          const seq = chunkSeqRef.current++;
+          uploadCallAudioChunk(callRoomIdRef.current, joinedAt, seq, event.data).catch((err) => {
+            console.error("uploadCallAudioChunk error:", err);
+          });
+        }
+      };
+      recorder.start(5000); // 5s rolling chunks
+      recorderRef.current = recorder;
+    } catch (err) {
+      // Recording for transcription is a best-effort add-on to the call
+      // itself — an unsupported codec or similar should never break the
+      // actual call the user is trying to have.
+      console.error("startRecording error:", err);
+    }
+  }, []);
 
   const getLocalMedia = useCallback(async (type) => {
     // On phones (and most modern browsers), camera/mic access is only
@@ -375,6 +429,17 @@ export function CallProvider({ children }) {
       }
     };
 
+    // The server has created a `Call` document for this now-connected
+    // call and wants both sides to start recording their own mic for
+    // transcription (see Socketmanager.js's startDirectCallRecording).
+    // Fires once per call, right after "callAnswered"/acceptCall, so
+    // localStreamRef is already populated by then on both sides.
+    const onCallSessionStarted = ({ roomId, joinedAt }) => {
+      callRoomIdRef.current = roomId;
+      callJoinedAtRef.current = joinedAt;
+      startRecording(localStreamRef.current, roomId, joinedAt);
+    };
+
     socket.on("incomingCall", onIncomingCall);
     socket.on("callAnswered", onCallAnswered);
     socket.on("iceCandidate", onIceCandidate);
@@ -384,6 +449,7 @@ export function CallProvider({ children }) {
     socket.on("callFailed", onCallFailed);
     socket.on("callUpgraded", onCallUpgraded);
     socket.on("groupCallError", onGroupCallError);
+    socket.on("callSessionStarted", onCallSessionStarted);
 
     return () => {
       socket.off("incomingCall", onIncomingCall);
@@ -395,9 +461,10 @@ export function CallProvider({ children }) {
       socket.off("callFailed", onCallFailed);
       socket.off("callUpgraded", onCallUpgraded);
       socket.off("groupCallError", onGroupCallError);
+      socket.off("callSessionStarted", onCallSessionStarted);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [socket, callState, resetCallState, addingPeople]);
+  }, [socket, callState, resetCallState, addingPeople, startRecording]);
 
   // Auto-clear a transient error banner after a few seconds.
   useEffect(() => {

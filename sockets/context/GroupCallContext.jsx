@@ -229,7 +229,43 @@ export function GroupCallProvider({ children }) {
     if (!stream || !stream.getAudioTracks().length) return;
     try {
       const audioOnly = new MediaStream(stream.getAudioTracks());
-      const recorder = new MediaRecorder(audioOnly, { mimeType: "audio/webm;codecs=opus" });
+
+      // Feature-detect the best container this browser can actually
+      // produce. Safari/iOS don't support "audio/webm;codecs=opus" at
+      // all — without this check, `new MediaRecorder(...)` below throws
+      // synchronously, we catch it, and that participant's mic is never
+      // recorded for the ENTIRE call (not degraded — completely absent).
+      // In a group call that shows up as "some people's voices just
+      // aren't in the transcript." ffmpeg auto-detects the real
+      // container from the bytes regardless of the ".webm" filename
+      // extension the backend always uses, so any of these are safe to
+      // send through the existing upload/transcribe pipeline unchanged.
+      const CANDIDATE_MIME_TYPES = [
+        "audio/webm;codecs=opus",
+        "audio/webm",
+        "audio/mp4", // Safari's usual pick
+        "audio/ogg;codecs=opus",
+      ];
+      const mimeType = CANDIDATE_MIME_TYPES.find(
+        (t) => window.MediaRecorder?.isTypeSupported?.(t)
+      );
+      if (!mimeType) {
+        console.error(
+          "startRecording: no supported audio MediaRecorder mimeType on this browser — this participant's audio will not be transcribed."
+        );
+        return;
+      }
+
+      // Opus's default bitrate for a plain audio-only MediaRecorder call
+      // can land as low as ~24-32kbps in some browsers, which is fine
+      // for playback but throws away detail whisper relies on,
+      // especially for quieter/farther-from-mic speakers in a group
+      // call. 96kbps mono is comfortably more than enough for speech
+      // and still tiny per 5s chunk (~60KB).
+      const recorder = new MediaRecorder(audioOnly, {
+        mimeType,
+        audioBitsPerSecond: 96000,
+      });
       chunkSeqRef.current = 0;
       recorder.ondataavailable = (event) => {
         if (event.data && event.data.size > 0 && roomIdRef.current) {

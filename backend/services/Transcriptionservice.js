@@ -30,6 +30,59 @@ if (!WHISPER_MODEL_PATH) {
       "context'. Set it to the absolute path of a ggml-*.bin model file."
   );
 }
+// "base" (whether ggml-base.bin or ggml-base.en.bin) is whisper.cpp's
+// smallest usable model and has a noticeably higher word-error-rate than
+// "small" or "medium" — exactly the gap that shows up as garbled or
+// missed words on real, imperfect group-call audio (cross-talk, laptop
+// mics, people not centered on their mic). If transcripts are coming out
+// wrong rather than just occasionally missing a word, the single biggest
+// lever is usually swapping WHISPER_MODEL_PATH to a bigger model
+// (ggml-small.bin is a good accuracy/speed tradeoff; ggml-medium.bin if
+// the server has the CPU/RAM for it), not tuning the flags below.
+//
+// Also default to a fixed language rather than auto-detect: on a short,
+// noisy, or overlapping-speech clip, whisper's language auto-detection
+// (what runs when no "-l" is given) can guess wrong, and a wrong
+// language guess produces fluent-looking text in the WRONG language
+// rather than an error — silently wrecking that segment. Set
+// WHISPER_LANGUAGE to "auto" in .env if calls are genuinely
+// multilingual; otherwise pin it to whatever language is actually
+// spoken.
+const WHISPER_LANGUAGE = process.env.WHISPER_LANGUAGE || "en";
+// Beam search (vs. the CLI's default greedy decoding) trades a bit of
+// speed for meaningfully better accuracy on the same model — worth it
+// here since transcription already happens asynchronously after the
+// call ends, so nothing user-facing is waiting on it.
+const WHISPER_BEAM_SIZE = process.env.WHISPER_BEAM_SIZE || "5";
+
+// Optional: path to a Silero VAD ggml model (see the .env comment near
+// WHISPER_VAD_MODEL_PATH for how to get one). Without this, whisper.cpp
+// decodes in fixed ~30s windows and — on short clips with a little
+// speech surrounded by silence — can report a segment's timestamps as
+// spanning the ENTIRE 30s window instead of just where the words were.
+// That's not just cosmetic: two people's segments both getting
+// full-window timestamps makes them trivially "overlap" in
+// detectOverlaps below even if they actually spoke one after another.
+// VAD fixes this at the source by telling whisper.cpp exactly where the
+// speech actually is before it decodes anything.
+const WHISPER_VAD_MODEL_PATH = process.env.WHISPER_VAD_MODEL_PATH || "";
+
+// Stock phrases whisper.cpp reliably hallucinates on pure silence/noise
+// (very common in the quiet stretches every real call has) rather than
+// actual speech. These would otherwise show up in the transcript as if
+// someone said them. This list is intentionally narrow — only near-exact
+// boilerplate whisper is known to emit on silence, not a general
+// profanity/quality filter — so real short utterances ("okay", "yeah")
+// are never dropped.
+const HALLUCINATION_PATTERNS = [
+  /^\s*\[\s*(blank[_ ]audio|silence|no speech|inaudible)\s*\]\s*$/i,
+  /^\s*\(\s*(silence|no speech|inaudible)\s*\)\s*$/i,
+  /^\s*(thanks for watching!?|thank you for watching!?|subscribe.*channel)\s*\.?\s*$/i,
+  /^\s*you\s*$/i,
+];
+function isLikelyHallucination(text) {
+  return HALLUCINATION_PATTERNS.some((re) => re.test(text));
+}
 
 // ---------------------------------------------------------------------
 // Filenames look like "<userId>-<joinedAtMs>-<seq>.webm" (written by
@@ -77,6 +130,15 @@ function convertToWav(webmPath) {
       [
         "-y", // overwrite if it already exists (safe to re-run)
         "-i", webmPath,
+        // In a group call, people sit at very different distances from
+        // their mic, so raw levels between speakers can differ by a lot
+        // even after the browser's own AGC — the quieter ones are
+        // exactly where a small Whisper model starts missing words.
+        // highpass cuts room rumble/AC hum below typical speech
+        // fundamentals, and dynaudnorm brings quiet stretches up to a
+        // usable level without clipping the loud ones, frame-by-frame
+        // rather than one flat gain for the whole file.
+        "-af", "highpass=f=100,dynaudnorm=f=150:g=15",
         "-ar", "16000", // 16kHz — what whisper.cpp models expect
         "-ac", "1", // mono
         "-c:a", "pcm_s16le", // plain PCM, which miniaudio can always read
@@ -103,9 +165,17 @@ function transcribeFile(filePath) {
       return reject(new Error("WHISPER_MODEL_PATH is not set"));
     }
     const outBase = filePath.replace(/\.(webm|wav)$/i, "");
+    const args = [
+      "-f", filePath,
+      "-m", WHISPER_MODEL_PATH,
+      "-oj", "-of", outBase, "-nt",
+      "-bs", WHISPER_BEAM_SIZE, // beam search — see comment near WHISPER_BEAM_SIZE above
+    ];
+    if (WHISPER_LANGUAGE !== "auto") args.push("-l", WHISPER_LANGUAGE);
+    if (WHISPER_VAD_MODEL_PATH) args.push("--vad", "-vm", WHISPER_VAD_MODEL_PATH);
     execFile(
       WHISPER_CLI,
-      ["-f", filePath, "-m", WHISPER_MODEL_PATH, "-oj", "-of", outBase, "-nt"],
+      args,
       (err) => {
         if (err) return reject(err);
         try {
@@ -116,7 +186,7 @@ function transcribeFile(filePath) {
               end: (seg.offsets?.to ?? 0) / 1000,
               text: (seg.text || "").trim(),
             }))
-            .filter((seg) => seg.text.length > 0);
+            .filter((seg) => seg.text.length > 0 && !isLikelyHallucination(seg.text));
           resolve(segments);
         } catch (parseErr) {
           reject(parseErr);
@@ -131,10 +201,27 @@ function transcribeFile(filePath) {
 // check regardless of whether there are 2 speakers or 10 — it only ever
 // compares time ranges, never audio — so nothing here changes between
 // 1:1 calls and group calls.
+//
+// One important caveat: whisper.cpp decodes in fixed ~30s windows, and
+// on short clips with a little speech surrounded by silence it can
+// report a segment's timestamps as spanning the WHOLE window rather
+// than just where the words were. Two such segments trivially "overlap"
+// even if the people actually spoke one after another. Using
+// WHISPER_VAD_MODEL_PATH (see Transcriptionservice.js/.env) fixes this
+// at the source; this length check is a fallback for when VAD isn't
+// configured — segments implausibly long relative to their own text
+// are excluded from overlap detection rather than trusted at face value.
+const MAX_PLAUSIBLE_SECONDS_PER_WORD = 3; // generous — real speech is ~0.3-0.5s/word
+function isTimestampSuspect(seg) {
+  const wordCount = seg.text.split(/\s+/).filter(Boolean).length || 1;
+  return (seg.end - seg.start) > wordCount * MAX_PLAUSIBLE_SECONDS_PER_WORD;
+}
 function detectOverlaps(segments) {
   for (let i = 0; i < segments.length; i++) {
+    if (isTimestampSuspect(segments[i])) continue;
     for (let j = i + 1; j < segments.length && segments[j].start < segments[i].end; j++) {
       if (segments[j].speaker === segments[i].speaker) continue;
+      if (isTimestampSuspect(segments[j])) continue;
       segments[i].overlapsWith = segments[i].overlapsWith || [];
       segments[j].overlapsWith = segments[j].overlapsWith || [];
       segments[i].overlapsWith.push(segments[j].speaker);
