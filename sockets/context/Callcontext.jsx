@@ -9,6 +9,12 @@ import React, {
 import { useSocket } from "./Socketcontext";
 import { useAuth } from "./Authcontext";
 import { getUserProfile, uploadCallAudioChunk } from "../api";
+import {
+  CALL_AUDIO_CHUNK_MS,
+  CALL_AUDIO_BITRATE,
+  CALL_AUDIO_CONSTRAINTS,
+  pickSupportedAudioMimeType,
+} from "../utils/audioRecording";
 
 const CallContext = createContext(null);
 
@@ -31,28 +37,11 @@ export const useCall = () => useContext(CallContext);
 // lifetime, so it catches the duplicate no matter which layer causes it.
 const activeRecordingSessions = new Set();
 
-// Rolling chunk length for call-audio recording, and the Opus bitrate to
-// encode it at. Shared here (rather than a magic number at each
-// recorder.start() call) so Callcontext.jsx and GroupCallContext.jsx —
-// which each run their own independent MediaRecorder — can't drift apart.
-// 10s chunks (up from 5s): fewer, larger HTTP uploads means less
-// per-chunk overhead and fewer WebM cluster boundaries to reassemble
-// correctly, at the cost of losing up to ~10s (instead of ~5s) of audio
-// if a tab crashes mid-chunk rather than a clean hangup.
-// 128kbps mono is comfortably more than speech needs but well below
-// where Opus quality plateaus for voice, and keeps a 10s chunk under
-// ~160KB — nowhere near the 2MB per-chunk multer limit even with
-// container overhead. The previous unset bitrate meant the browser's own
-// default (often as low as 24-32kbps for a plain audio MediaRecorder),
-// which is exactly the kind of quality gap that gets a small Whisper
-// model — or even a large one, on a quiet/distant speaker — missing
-// words. This is the biggest lever on "audio quality" that's actually
-// under this app's control; getUserMedia's echoCancellation /
-// noiseSuppression / autoGainControl (already set in getLocalMedia
-// below) then RNNoise/VAD improvements from there are diminishing
-// returns without hardware/mic changes.
-const CALL_AUDIO_CHUNK_MS = 10000;
-const CALL_AUDIO_BITRATE = 128000;
+// CALL_AUDIO_CHUNK_MS, CALL_AUDIO_BITRATE, CALL_AUDIO_CONSTRAINTS, and
+// pickSupportedAudioMimeType now live in ../utils/audioRecording.js,
+// shared with GroupCallContext.jsx, so the two call flows' capture/
+// encode settings can never drift apart — see that file for the full
+// reasoning behind each setting.
 
 // Public STUN servers are enough to discover most users' public IP/port so
 // two peers can connect directly. Some networks (symmetric NATs, strict
@@ -217,8 +206,23 @@ export function CallProvider({ children }) {
     activeRecordingSessions.add(roomId);
     try {
       const audioOnly = new MediaStream(stream.getAudioTracks());
+
+      // Was previously hardcoded to "audio/webm;codecs=opus" with no
+      // fallback — on a browser that doesn't support that exact string
+      // (Safari/iOS), `new MediaRecorder(...)` throws synchronously and
+      // this participant's audio is never recorded for the whole call.
+      // See ../utils/audioRecording.js for the fallback list.
+      const mimeType = pickSupportedAudioMimeType();
+      if (!mimeType) {
+        console.error(
+          "startRecording: no supported audio MediaRecorder mimeType on this browser — this call's audio will not be transcribed."
+        );
+        activeRecordingSessions.delete(roomId);
+        return;
+      }
+
       const recorder = new MediaRecorder(audioOnly, {
-        mimeType: "audio/webm;codecs=opus",
+        mimeType,
         audioBitsPerSecond: CALL_AUDIO_BITRATE,
       });
       chunkSeqRef.current = 0;
@@ -262,11 +266,7 @@ export function CallProvider({ children }) {
     }
 
     const stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-      },
+      audio: CALL_AUDIO_CONSTRAINTS,
       video: type === "video",
     });
     localStreamRef.current = stream;

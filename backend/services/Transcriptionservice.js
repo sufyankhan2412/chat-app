@@ -134,11 +134,38 @@ function convertToWav(webmPath) {
         // their mic, so raw levels between speakers can differ by a lot
         // even after the browser's own AGC — the quieter ones are
         // exactly where a small Whisper model starts missing words.
-        // highpass cuts room rumble/AC hum below typical speech
-        // fundamentals, and dynaudnorm brings quiet stretches up to a
-        // usable level without clipping the loud ones, frame-by-frame
-        // rather than one flat gain for the whole file.
-        "-af", "highpass=f=100,dynaudnorm=f=150:g=15",
+        //
+        // IMPORTANT: dynaudnorm on its own is NOT noise reduction — it's
+        // a loudness normalizer. It boosts every frame (including silent/
+        // quiet ones) up toward a target level, so a quiet stretch that
+        // contains only hiss/hum/room noise gets boosted right along with
+        // it. With a large gain factor that's audible pumping of the
+        // noise floor during pauses — the "removing noise actually makes
+        // it worse" symptom. The chain below fixes that by actually
+        // reducing noise BEFORE normalizing, and by gating near-silence
+        // afterward so nothing is left to pump:
+        //   1. highpass=f=80   - cuts sub-80Hz rumble/AC hum without
+        //                        eating low-pitched (e.g. male) voice
+        //                        fundamentals the way f=100 could.
+        //   2. afftdn=nf=-25   - FFT-based noise reduction: estimates the
+        //                        noise floor and subtracts it, i.e. actual
+        //                        denoising, which was previously missing
+        //                        entirely from this chain.
+        //   3. dynaudnorm=...  - normalizes level across speakers, but
+        //                        with a smaller gain factor (g=7) and
+        //                        longer analysis window (f=200) than
+        //                        before, so it evens out volume without
+        //                        aggressively pumping quiet frames.
+        //   4. agate=...       - mutes near-silent frames outright after
+        //                        normalization, so any residual noise in
+        //                        pauses doesn't get transcribed as
+        //                        hallucinated words and isn't audible in
+        //                        the final WAV.
+        // If mic noise is still rough after this, swap afftdn for
+        // arnndn=m=<path-to-rnnoise-model.rnnn> (RNNoise) — meaningfully
+        // better than afftdn for voice/mic noise, but needs a model file.
+        "-af",
+        "highpass=f=80,afftdn=nf=-25,dynaudnorm=f=200:g=7:p=0.7:m=10,agate=threshold=0.02:ratio=4",
         "-ar", "16000", // 16kHz — what whisper.cpp models expect
         "-ac", "1", // mono
         "-c:a", "pcm_s16le", // plain PCM, which miniaudio can always read

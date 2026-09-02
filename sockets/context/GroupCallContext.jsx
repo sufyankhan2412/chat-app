@@ -9,6 +9,12 @@ import React, {
 import { useSocket } from "./Socketcontext";
 import { useAuth } from "./Authcontext";
 import { createCallLink, getGroupCallChatHistory, uploadCallAudioChunk } from "../api";
+import {
+  CALL_AUDIO_CHUNK_MS,
+  CALL_AUDIO_BITRATE,
+  CALL_AUDIO_CONSTRAINTS,
+  pickSupportedAudioMimeType,
+} from "../utils/audioRecording";
 
 const GroupCallContext = createContext(null);
 
@@ -19,15 +25,11 @@ export const useGroupCall = () => useContext(GroupCallContext);
 // across every join session in this tab's lifetime.
 const activeRecordingSessions = new Set();
 
-// Kept in sync with Callcontext.jsx's identical constants — both files
-// run their own independent MediaRecorder against the same backend
-// upload/combine/transcribe pipeline, so their chunking and quality
-// settings should never drift apart. See Callcontext.jsx for the full
-// reasoning (10s chunks: fewer/larger uploads and fewer WebM cluster
-// boundaries to reassemble; 128kbps: the biggest available lever on
-// transcription quality that's actually under this app's control).
-const CALL_AUDIO_CHUNK_MS = 10000;
-const CALL_AUDIO_BITRATE = 128000;
+// CALL_AUDIO_CHUNK_MS, CALL_AUDIO_BITRATE, CALL_AUDIO_CONSTRAINTS, and
+// pickSupportedAudioMimeType now live in ../utils/audioRecording.js,
+// shared with Callcontext.jsx, so the two call flows' capture/encode
+// settings can never drift apart — see that file for the full reasoning
+// behind each setting.
 
 // Same ICE server setup as the 1:1 call flow (Callcontext.jsx) — see that
 // file's comment for why a TURN relay matters in production.
@@ -182,7 +184,7 @@ export function GroupCallProvider({ children }) {
       throw err;
     }
     const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      audio: CALL_AUDIO_CONSTRAINTS,
       video: wantVideo,
     });
     localStreamRef.current = stream;
@@ -255,24 +257,10 @@ export function GroupCallProvider({ children }) {
       const audioOnly = new MediaStream(stream.getAudioTracks());
 
       // Feature-detect the best container this browser can actually
-      // produce. Safari/iOS don't support "audio/webm;codecs=opus" at
-      // all — without this check, `new MediaRecorder(...)` below throws
-      // synchronously, we catch it, and that participant's mic is never
-      // recorded for the ENTIRE call (not degraded — completely absent).
-      // In a group call that shows up as "some people's voices just
-      // aren't in the transcript." ffmpeg auto-detects the real
-      // container from the bytes regardless of the ".webm" filename
-      // extension the backend always uses, so any of these are safe to
-      // send through the existing upload/transcribe pipeline unchanged.
-      const CANDIDATE_MIME_TYPES = [
-        "audio/webm;codecs=opus",
-        "audio/webm",
-        "audio/mp4", // Safari's usual pick
-        "audio/ogg;codecs=opus",
-      ];
-      const mimeType = CANDIDATE_MIME_TYPES.find(
-        (t) => window.MediaRecorder?.isTypeSupported?.(t)
-      );
+      // produce — see ../utils/audioRecording.js's pickSupportedAudioMimeType
+      // for the fallback list and why this matters (Safari/iOS don't
+      // support "audio/webm;codecs=opus" at all).
+      const mimeType = pickSupportedAudioMimeType();
       if (!mimeType) {
         console.error(
           "startRecording: no supported audio MediaRecorder mimeType on this browser — this participant's audio will not be transcribed."
