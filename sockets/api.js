@@ -148,6 +148,19 @@ export const uploadCallAudioChunk = (roomId, joinedAt, seq, blob) => {
   // arrival order.
   formData.append("seq", seq);
   formData.append("chunk", blob, `chunk-${seq}.webm`);
+
+  // Diagnostic log requested for the recording pipeline: lets a failed
+  // transcription be traced back to exactly which chunk(s), from which
+  // join session, never made it out of the browser correctly.
+  console.debug("[audio-chunk:upload]", {
+    recordingId: roomId,
+    joinedAt,
+    chunkIndex: seq,
+    chunkSize: blob.size,
+    mimeType: blob.type,
+    timestamp: new Date().toISOString(),
+  });
+
   return api.post(`/calls/${roomId}/audio-chunk`, formData, {
     headers: { "Content-Type": "multipart/form-data" },
   });

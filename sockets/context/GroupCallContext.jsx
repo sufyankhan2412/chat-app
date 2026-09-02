@@ -14,6 +14,21 @@ const GroupCallContext = createContext(null);
 
 export const useGroupCall = () => useContext(GroupCallContext);
 
+// See the identical comment on activeRecordingSessions in
+// Callcontext.jsx — same reasoning, same fix, keyed by roomId, shared
+// across every join session in this tab's lifetime.
+const activeRecordingSessions = new Set();
+
+// Kept in sync with Callcontext.jsx's identical constants — both files
+// run their own independent MediaRecorder against the same backend
+// upload/combine/transcribe pipeline, so their chunking and quality
+// settings should never drift apart. See Callcontext.jsx for the full
+// reasoning (10s chunks: fewer/larger uploads and fewer WebM cluster
+// boundaries to reassemble; 128kbps: the biggest available lever on
+// transcription quality that's actually under this app's control).
+const CALL_AUDIO_CHUNK_MS = 10000;
+const CALL_AUDIO_BITRATE = 128000;
+
 // Same ICE server setup as the 1:1 call flow (Callcontext.jsx) — see that
 // file's comment for why a TURN relay matters in production.
 const ICE_SERVERS = [
@@ -128,6 +143,9 @@ export function GroupCallProvider({ children }) {
     if (recorderRef.current && recorderRef.current.state !== "inactive") {
       recorderRef.current.stop();
     }
+    if (roomIdRef.current) {
+      activeRecordingSessions.delete(roomIdRef.current);
+    }
     recorderRef.current = null;
     joinedAtRef.current = null;
     if (localStreamRef.current) {
@@ -227,6 +245,12 @@ export function GroupCallProvider({ children }) {
   // "groupCallJoined", not a local clock reading (see api.js).
   const startRecording = useCallback((stream, joinedAt) => {
     if (!stream || !stream.getAudioTracks().length) return;
+    const roomId = roomIdRef.current;
+    // Idempotency guard — see activeRecordingSessions' comment above.
+    if (!roomId || activeRecordingSessions.has(roomId)) {
+      return;
+    }
+    activeRecordingSessions.add(roomId);
     try {
       const audioOnly = new MediaStream(stream.getAudioTracks());
 
@@ -260,11 +284,11 @@ export function GroupCallProvider({ children }) {
       // can land as low as ~24-32kbps in some browsers, which is fine
       // for playback but throws away detail whisper relies on,
       // especially for quieter/farther-from-mic speakers in a group
-      // call. 96kbps mono is comfortably more than enough for speech
-      // and still tiny per 5s chunk (~60KB).
+      // call. 128kbps mono is comfortably more than enough for speech
+      // and still keeps a 10s chunk under ~160KB.
       const recorder = new MediaRecorder(audioOnly, {
         mimeType,
-        audioBitsPerSecond: 96000,
+        audioBitsPerSecond: CALL_AUDIO_BITRATE,
       });
       chunkSeqRef.current = 0;
       recorder.ondataavailable = (event) => {
@@ -275,12 +299,14 @@ export function GroupCallProvider({ children }) {
           });
         }
       };
-      recorder.start(5000); // 5s rolling chunks
+      recorder.onstop = () => activeRecordingSessions.delete(roomId);
+      recorder.start(CALL_AUDIO_CHUNK_MS); // 10s rolling chunks
       recorderRef.current = recorder;
     } catch (err) {
       // Recording for transcription is a best-effort add-on to the call
       // itself — an unsupported codec or similar should never break the
       // actual call the user is trying to have.
+      activeRecordingSessions.delete(roomId);
       console.error("startRecording error:", err);
     }
   }, []);

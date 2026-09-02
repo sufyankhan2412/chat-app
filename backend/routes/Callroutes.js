@@ -240,6 +240,18 @@ router.post(
       }
 
       saveCallAudioChunk(roomId, req.user._id, joinedAt, seq, req.file.buffer);
+
+      // Diagnostic log requested for the recording pipeline: pairs with
+      // the frontend's "[audio-chunk:upload]" log so a bad recording can
+      // be traced end-to-end (what the client sent vs. what the server
+      // actually received) instead of guessing from the final transcript.
+      console.log("[audio-chunk:received]", {
+        recordingId: roomId,
+        chunkIndex: seq,
+        chunkSize: req.file.size,
+        receivedAt: new Date().toISOString(),
+      });
+
       res.sendStatus(204);
     } catch (err) {
       res.status(500).json({ message: err.message });

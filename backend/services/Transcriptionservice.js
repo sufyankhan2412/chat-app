@@ -329,9 +329,45 @@ async function enqueueGroupCallTranscription(roomId, io) {
 
     const coveredJoins = new Set(); // `${userId}-${joinedAtMs}` that had at least one chunk
 
-    const jobs = [...sessions.entries()].map(async ([key, chunks]) => {
-      chunks.sort((a, b) => a.seq - b.seq);
-      const { userId, joinedAtMs } = chunks[0];
+    const jobs = [...sessions.entries()].map(async ([key, rawChunks]) => {
+      rawChunks.sort((a, b) => a.seq - b.seq);
+      const { userId, joinedAtMs } = rawChunks[0];
+
+      // Integrity check before combining: dedupe any seq that landed more
+      // than once (a client retry re-uploading the same chunk after a
+      // dropped response — saveCallAudioChunk overwrites the file itself,
+      // but if it somehow produced two distinct files for one seq we
+      // still only want to glue in the first), and note any gaps in the
+      // sequence so a truncated/incomplete session shows up in the logs
+      // instead of silently jumping over missing audio.
+      const seenSeqs = new Set();
+      const duplicateChunks = [];
+      const chunks = rawChunks.filter((c) => {
+        if (seenSeqs.has(c.seq)) {
+          duplicateChunks.push(c.seq);
+          return false;
+        }
+        seenSeqs.add(c.seq);
+        return true;
+      });
+
+      const expectedChunks = chunks.length ? chunks[chunks.length - 1].seq + 1 : 0;
+      const receivedChunks = chunks.length;
+      const missingChunks = [];
+      for (let i = 0; i < expectedChunks; i++) {
+        if (!seenSeqs.has(i)) missingChunks.push(i);
+      }
+      const chunkOrder = chunks.map((c) => c.seq);
+
+      console.log("[audio-session:finalize]", {
+        recordingId: roomId,
+        session: key,
+        expectedChunks,
+        receivedChunks,
+        missingChunks,
+        duplicateChunks,
+        chunkOrder,
+      });
 
       const entry = call.participants.find(
         (p) => String(p.user?._id || p.user) === userId && p.joinedAt.getTime() === joinedAtMs

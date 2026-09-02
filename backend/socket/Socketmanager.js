@@ -1,3 +1,5 @@
+const fs = require("fs");
+const path = require("path");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const User = require("../models/User");
@@ -6,12 +8,88 @@ const Contact = require("../models/Contact");
 const Call = require("../models/Call");
 const GroupCallMessage = require("../models/Groupcallmessage");
 const CallChatReadState = require("../models/Callchatreadstate");
-const { enqueueGroupCallTranscription } = require("../services/transcriptionService");
+const { enqueueGroupCallTranscription } = require("../services/Transcriptionservice");
+const { callAudioDir } = require("../middleware/upload");
 
-// How long to wait, after a group call's room empties, before kicking off
-// transcription — gives any last audio chunk uploads still in flight over
-// the network (e.g. from whoever just left) a chance to land first.
-const TRANSCRIPTION_START_DELAY_MS = 15000;
+// Before kicking off transcription for a room, wait for its chunk
+// uploads to actually go QUIET rather than guessing a fixed delay.
+//
+// A flat setTimeout here was always a race: it assumes every
+// still-in-flight chunk upload — including the very last one, flushed by
+// the client the instant it stops recording — will land within that
+// window. That's not guaranteed on a slow connection, on a backgrounded
+// tab (browsers throttle timers/network there), or if the tab closes
+// before the final upload finishes. When it loses the race,
+// enqueueGroupCallTranscription reads the room's audio folder, finds it
+// incomplete, and produces a transcript from partial audio — exactly the
+// "final result shows up before the audio actually arrived" symptom.
+//
+// This polls the room's on-disk chunk folder instead: as long as new
+// files keep showing up, wait longer; only proceed once nothing's
+// changed for TRANSCRIPTION_SETTLE_STABLE_CHECKS consecutive polls. A
+// hard cap (TRANSCRIPTION_MAX_WAIT_MS) still applies so one truly-stuck
+// upload (a client that crashed mid-chunk, a chunk that will just never
+// arrive) can't block transcription forever — after the cap, it proceeds
+// with whatever's there, same as before, and enqueueGroupCallTranscription's
+// existing missingChunks/duplicateChunks logging still records exactly
+// what was and wasn't present.
+const TRANSCRIPTION_INITIAL_DELAY_MS = 5000; // don't even start polling immediately — give the client's own stop()/flush a moment
+const TRANSCRIPTION_POLL_INTERVAL_MS = 2000;
+const TRANSCRIPTION_STABLE_CHECKS_REQUIRED = 3; // ~6s of no new files before we call it settled
+const TRANSCRIPTION_MAX_WAIT_MS = 45000;
+
+function snapshotAudioDir(roomId) {
+  const dir = path.join(callAudioDir, String(roomId));
+  if (!fs.existsSync(dir)) return "0:";
+  const files = fs.readdirSync(dir).filter((f) => f.endsWith(".webm") && !f.includes(".combined."));
+  // Name + size per file (not just count) so a chunk being overwritten
+  // in place — same seq, different bytes — also counts as "still
+  // changing", not just new files appearing.
+  return files
+    .map((f) => {
+      const stat = fs.statSync(path.join(dir, f));
+      return `${f}:${stat.size}`;
+    })
+    .sort()
+    .join("|");
+}
+
+function waitForAudioUploadsToSettle(roomId) {
+  return new Promise((resolve) => {
+    const startedAt = Date.now();
+    let lastSnapshot = null;
+    let stableCount = 0;
+
+    const poll = () => {
+      const snapshot = snapshotAudioDir(roomId);
+      const elapsed = Date.now() - startedAt;
+
+      if (snapshot === lastSnapshot) {
+        stableCount++;
+      } else {
+        stableCount = 0;
+        lastSnapshot = snapshot;
+      }
+
+      if (stableCount >= TRANSCRIPTION_STABLE_CHECKS_REQUIRED) {
+        return resolve();
+      }
+      if (elapsed >= TRANSCRIPTION_MAX_WAIT_MS) {
+        console.warn(
+          `[transcription] room ${roomId}: audio uploads never settled within ${TRANSCRIPTION_MAX_WAIT_MS}ms — proceeding anyway with whatever has arrived.`
+        );
+        return resolve();
+      }
+      setTimeout(poll, TRANSCRIPTION_POLL_INTERVAL_MS);
+    };
+
+    setTimeout(poll, TRANSCRIPTION_INITIAL_DELAY_MS);
+  });
+}
+
+function scheduleTranscription(roomId, io) {
+  waitForAudioUploadsToSettle(roomId).then(() => enqueueGroupCallTranscription(roomId, io));
+}
 
 // In-memory map of userId -> Set<socketId> for currently connected users
 const onlineUsers = new Map();
@@ -193,10 +271,7 @@ function finalizeDirectCallRecording(io, meta) {
     }
   )
     .then(() => {
-      setTimeout(
-        () => enqueueGroupCallTranscription(roomId, io),
-        TRANSCRIPTION_START_DELAY_MS
-      );
+      scheduleTranscription(roomId, io);
     })
     .catch((err) => console.error(`finalizeDirectCallRecording(${roomId}) error:`, err.message));
 }
@@ -839,10 +914,7 @@ try {
         }
 
         if (roomNowEmpty) {
-          setTimeout(
-            () => enqueueGroupCallTranscription(roomId, io),
-            TRANSCRIPTION_START_DELAY_MS
-          );
+          scheduleTranscription(roomId, io);
         }
 
         io.to(getGroupCallRoomName(roomId)).emit("peerLeft", {
@@ -911,10 +983,7 @@ try {
           }
 
           if (roomNowEmpty) {
-            setTimeout(
-              () => enqueueGroupCallTranscription(roomId, io),
-              TRANSCRIPTION_START_DELAY_MS
-            );
+            scheduleTranscription(roomId, io);
           }
         }
       } catch (err) {

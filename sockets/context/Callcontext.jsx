@@ -14,6 +14,46 @@ const CallContext = createContext(null);
 
 export const useCall = () => useContext(CallContext);
 
+// Module-scope (NOT a ref/state inside the component) set of roomIds
+// currently being recorded. A per-component ref survives re-renders of
+// ONE component instance, but not a full unmount+remount of that
+// instance — and "callSessionStarted"'s effect below re-subscribes on
+// every callState change (callState transitions several times right as
+// a call connects), which combined with React 18 StrictMode's dev-mode
+// double effect invocation can produce more than one live subscription
+// long enough for startRecording to run twice for the same call. Two
+// MediaRecorder instances each starting their own chunk-seq counter at 0
+// then upload two different "seq N" blobs for every N — same filename,
+// so only one survives on disk per seq, but WHICHEVER one wins can
+// differ tick to tick, splicing together audio from two unrelated
+// recorder sessions (different init/header segments) into one corrupt
+// WebM. This set is keyed by roomId and lives for the process's whole
+// lifetime, so it catches the duplicate no matter which layer causes it.
+const activeRecordingSessions = new Set();
+
+// Rolling chunk length for call-audio recording, and the Opus bitrate to
+// encode it at. Shared here (rather than a magic number at each
+// recorder.start() call) so Callcontext.jsx and GroupCallContext.jsx —
+// which each run their own independent MediaRecorder — can't drift apart.
+// 10s chunks (up from 5s): fewer, larger HTTP uploads means less
+// per-chunk overhead and fewer WebM cluster boundaries to reassemble
+// correctly, at the cost of losing up to ~10s (instead of ~5s) of audio
+// if a tab crashes mid-chunk rather than a clean hangup.
+// 128kbps mono is comfortably more than speech needs but well below
+// where Opus quality plateaus for voice, and keeps a 10s chunk under
+// ~160KB — nowhere near the 2MB per-chunk multer limit even with
+// container overhead. The previous unset bitrate meant the browser's own
+// default (often as low as 24-32kbps for a plain audio MediaRecorder),
+// which is exactly the kind of quality gap that gets a small Whisper
+// model — or even a large one, on a quiet/distant speaker — missing
+// words. This is the biggest lever on "audio quality" that's actually
+// under this app's control; getUserMedia's echoCancellation /
+// noiseSuppression / autoGainControl (already set in getLocalMedia
+// below) then RNNoise/VAD improvements from there are diminishing
+// returns without hardware/mic changes.
+const CALL_AUDIO_CHUNK_MS = 10000;
+const CALL_AUDIO_BITRATE = 128000;
+
 // Public STUN servers are enough to discover most users' public IP/port so
 // two peers can connect directly. Some networks (symmetric NATs, strict
 // corporate firewalls) need a TURN (relay) server as well — add one here
@@ -110,6 +150,9 @@ export function CallProvider({ children }) {
     if (recorderRef.current && recorderRef.current.state !== "inactive") {
       recorderRef.current.stop();
     }
+    if (callRoomIdRef.current) {
+      activeRecordingSessions.delete(callRoomIdRef.current);
+    }
     recorderRef.current = null;
     callRoomIdRef.current = null;
     callJoinedAtRef.current = null;
@@ -166,9 +209,18 @@ export function CallProvider({ children }) {
   // "callSessionStarted", not a local clock reading.
   const startRecording = useCallback((stream, roomId, joinedAt) => {
     if (!stream || !stream.getAudioTracks().length) return;
+    // Idempotency guard — see the comment on activeRecordingSessions
+    // above for why a ref alone isn't enough here.
+    if (activeRecordingSessions.has(roomId)) {
+      return;
+    }
+    activeRecordingSessions.add(roomId);
     try {
       const audioOnly = new MediaStream(stream.getAudioTracks());
-      const recorder = new MediaRecorder(audioOnly, { mimeType: "audio/webm;codecs=opus" });
+      const recorder = new MediaRecorder(audioOnly, {
+        mimeType: "audio/webm;codecs=opus",
+        audioBitsPerSecond: CALL_AUDIO_BITRATE,
+      });
       chunkSeqRef.current = 0;
       recorder.ondataavailable = (event) => {
         if (event.data && event.data.size > 0 && callRoomIdRef.current) {
@@ -178,12 +230,17 @@ export function CallProvider({ children }) {
           });
         }
       };
-      recorder.start(5000); // 5s rolling chunks
+      // Release the guard once this recorder actually stops (call ended,
+      // or an error), so a genuinely new call reusing this same tab can
+      // record again.
+      recorder.onstop = () => activeRecordingSessions.delete(roomId);
+      recorder.start(CALL_AUDIO_CHUNK_MS); // 10s rolling chunks
       recorderRef.current = recorder;
     } catch (err) {
       // Recording for transcription is a best-effort add-on to the call
       // itself — an unsupported codec or similar should never break the
       // actual call the user is trying to have.
+      activeRecordingSessions.delete(roomId);
       console.error("startRecording error:", err);
     }
   }, []);
