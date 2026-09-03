@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { useGroupCall } from "../context/GroupCallContext";
 import { getUserProfile } from "../api";
 import { resolveAvatarUrl } from "../utils/avatar";
+import { attachStreamAndPlay, registerAutoplayUnlock } from "../utils/mediaPlayback";
 
 function MicIcon(props) {
   return (
@@ -221,9 +222,14 @@ function ParticipantTile({ userId, stream, mode, profile, isHost, canRemove, onR
   const videoRef = useRef(null);
   const audioRef = useRef(null);
 
+  // Remote participants' media is never muted (we want to hear/see
+  // them), so it's subject to the browser's autoplay-with-sound policy —
+  // see mediaPlayback.js for why a blocked first play() otherwise never
+  // gets retried, which is what made someone's voice only come through
+  // after clicking something unrelated like mute.
   useEffect(() => {
-    if (videoRef.current) videoRef.current.srcObject = stream || null;
-    if (audioRef.current) audioRef.current.srcObject = stream || null;
+    attachStreamAndPlay(videoRef.current, stream);
+    attachStreamAndPlay(audioRef.current, stream);
   }, [stream]);
 
   const name = profile?.username || "Joining…";
@@ -232,7 +238,7 @@ function ParticipantTile({ userId, stream, mode, profile, isHost, canRemove, onR
     <div className="gc-tile">
       {mode === "video" ? (
         <>
-          <video ref={videoRef} autoPlay playsInline className="gc-tile-video" />
+          <video ref={videoRef} autoPlay playsInline data-call-media className="gc-tile-video" />
           {!stream && (
             <div className="gc-tile-placeholder">
               <img src={resolveAvatarUrl(profile?.avatar)} alt={name} className="gc-tile-avatar" />
@@ -241,7 +247,7 @@ function ParticipantTile({ userId, stream, mode, profile, isHost, canRemove, onR
         </>
       ) : (
         <>
-          <audio ref={audioRef} autoPlay />
+          <audio ref={audioRef} autoPlay data-call-media />
           <div className="gc-tile-placeholder">
             <img src={resolveAvatarUrl(profile?.avatar)} alt={name} className="gc-tile-avatar" />
           </div>
@@ -303,6 +309,15 @@ export default function GroupCallStage({ onLeave }) {
   useEffect(() => {
     if (localVideoRef.current) localVideoRef.current.srcObject = localStream || null;
   }, [localStream]);
+
+  // Registers a one-time, page-wide listener that retries play() on any
+  // stuck call media the instant the page sees its first interaction —
+  // see mediaPlayback.js. Safe to call on every mount; it's a no-op after
+  // the first (CallModal.jsx also calls this — whichever mounts first
+  // wins, both call sites are equally valid).
+  useEffect(() => {
+    registerAutoplayUnlock();
+  }, []);
 
   // Keep the unread badge cleared — and the server-side read cursor
   // advanced — while the panel is actually open, including for messages

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useCall, CALL_STATE } from "../context/Callcontext";
 import { useGroupCall } from "../context/GroupCallContext";
 import { resolveAvatarUrl } from "../utils/avatar";
+import { attachStreamAndPlay, registerAutoplayUnlock } from "../utils/mediaPlayback";
 
 // Simple line-style call icons drawn to match the app's existing icon set
 // (see ChatWindow.jsx's back/menu icons) — plain currentColor strokes,
@@ -131,6 +132,13 @@ export default function CallModal() {
   // this covers both "stream arrives after the element exists" (remote,
   // via the effects below) and "element mounts after the stream already
   // exists" (local, the bug that was happening here).
+  //
+  // Local video is muted (see the <video muted> below), so its implicit
+  // autoPlay always succeeds under every browser's autoplay policy — no
+  // explicit play() needed there. Remote video/audio is NOT muted, so it
+  // needs attachStreamAndPlay (see mediaPlayback.js for why: a blocked
+  // first play() otherwise never gets retried, which is what made the
+  // other person's voice only come through after clicking mute).
   const setLocalVideoNode = useCallback(
     (node) => {
       localVideoRef.current = node;
@@ -142,7 +150,7 @@ export default function CallModal() {
   const setRemoteVideoNode = useCallback(
     (node) => {
       remoteVideoRef.current = node;
-      if (node) node.srcObject = remoteStream || null;
+      attachStreamAndPlay(node, remoteStream);
     },
     [remoteStream]
   );
@@ -150,10 +158,18 @@ export default function CallModal() {
   const setRemoteAudioNode = useCallback(
     (node) => {
       remoteAudioRef.current = node;
-      if (node) node.srcObject = remoteStream || null;
+      attachStreamAndPlay(node, remoteStream);
     },
     [remoteStream]
   );
+
+  // Registers a one-time, page-wide listener that retries play() on any
+  // stuck call media the instant the page sees its first interaction —
+  // see mediaPlayback.js. Safe to call on every mount; it's a no-op after
+  // the first.
+  useEffect(() => {
+    registerAutoplayUnlock();
+  }, []);
 
   useEffect(() => {
     if (localVideoRef.current) {
@@ -162,12 +178,8 @@ export default function CallModal() {
   }, [localStream]);
 
   useEffect(() => {
-    if (remoteVideoRef.current) {
-      remoteVideoRef.current.srcObject = remoteStream || null;
-    }
-    if (remoteAudioRef.current) {
-      remoteAudioRef.current.srcObject = remoteStream || null;
-    }
+    attachStreamAndPlay(remoteVideoRef.current, remoteStream);
+    attachStreamAndPlay(remoteAudioRef.current, remoteStream);
   }, [remoteStream]);
 
   useEffect(() => {
@@ -226,7 +238,7 @@ export default function CallModal() {
     <div className="call-overlay">
       {/* Hidden audio sink so voice plays even while the video element (if any)
           is muted/hidden — harmless no-op duplicate for video calls. */}
-      {!isVideo && <audio ref={setRemoteAudioNode} autoPlay playsInline />}
+      {!isVideo && <audio ref={setRemoteAudioNode} autoPlay playsInline data-call-media />}
 
       {isVideo && callState === CALL_STATE.ONGOING ? (
         <div className="call-video-stage">
@@ -235,6 +247,7 @@ export default function CallModal() {
             className="call-remote-video"
             autoPlay
             playsInline
+            data-call-media
           />
           {!remoteStream && (
             <div className="call-video-waiting">

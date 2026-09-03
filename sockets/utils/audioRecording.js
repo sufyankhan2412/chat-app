@@ -35,21 +35,41 @@ export const CALL_AUDIO_CONSTRAINTS = {
   sampleSize: 16,
 };
 
-// DEPRECATED: The two-stream architecture (separate getUserMedia for
-// recording) caused compatibility issues across different browsers and
-// devices. Some browsers throttle or mute the second stream, leading to
-// corrupted/silent recordings. The solution is to USE THE WEBRTC STREAM
-// (Stream A) for recording but clone the audio track so the Web Audio
-// API has its own independent reference that won't be affected by the
-// peer connection's processing.
+// ---------------------------------------------------------------------
+// HISTORY / WHY THERE'S ONLY ONE getUserMedia() CALL PER JOIN SESSION:
 //
-// This constant is kept for backwards compatibility but is no longer
-// used. Recording now uses the cloned WebRTC stream.
-export const RECORDING_AUDIO_CONSTRAINTS = {
-  echoCancellation: true,
-  noiseSuppression: false,
-  autoGainControl: true,
-  channelCount: 1,
-  sampleRate: 48000,
-  sampleSize: 16,
-};
+// A previous version of this app opened a SECOND real getUserMedia()
+// audio capture (on top of the one above that feeds the live WebRTC
+// call) purely for recording, based on the belief that
+// MediaStreamTrack.clone() shares its `enabled` flag with the track it
+// was cloned from — i.e. that muting the call track would silently mute
+// the "independent" recording too.
+//
+// That belief was wrong. Per the MediaStream spec, clone() returns a
+// genuinely independent MediaStreamTrack instance with its OWN
+// `enabled` flag, even though both instances read from the same
+// physical microphone source. Setting `enabled = false` on the original
+// (what toggleMute does, in Callcontext.jsx / GroupCallContext.jsx)
+// never touches a clone's `enabled` state.
+//
+// Opening a second real capture session on the same input device is
+// what actually caused a much worse, user-visible bug: two concurrent
+// getUserMedia() sessions on one microphone fight over the browser/OS's
+// shared echo-cancellation and auto-gain-control pipeline. The
+// symptom was exactly what got reported — the LIVE call audio (Stream
+// A, what every other participant hears) came through choppy, robotic,
+// or "underwater"-sounding whenever the speaking participant was
+// actively talking (both AGC/AEC loops reacting to the same input at
+// once), and cleared up the moment that participant muted (back down
+// to a single active processing loop). The same contention degraded
+// the recording itself, which is what fed Whisper — so the live-call
+// quality bug and the transcription-quality bug were the same root
+// cause, not two separate ones.
+//
+// FIX: there is now exactly one getUserMedia() call per join session
+// (CALL_AUDIO_CONSTRAINTS above). Recording clones that single
+// resulting audio track and forces the clone's `enabled` to `true` for
+// the life of the recording — see startRecording in Callcontext.jsx /
+// GroupCallContext.jsx. That keeps recording running through mute
+// without ever opening a second hardware capture.
+// ---------------------------------------------------------------------

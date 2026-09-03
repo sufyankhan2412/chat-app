@@ -119,13 +119,11 @@ export function CallProvider({ children }) {
   // land on the server before telling the server the call is over — see
   // stopRecordingAndFlush below for why this matters.
   const pendingUploadsRef = useRef(new Set());
-  // Dedicated recording stream (Stream B) — completely independent from
-  // localStreamRef (Stream A, used for WebRTC). Obtained via a separate
-  // getUserMedia() call in startRecording with browser audio processing
-  // disabled, so the PCM recorder captures the raw microphone signal
-  // rather than the AEC-processed signal that goes to the peer connection.
-  // Never added to any RTCPeerConnection. See RECORDING_AUDIO_CONSTRAINTS
-  // in audioRecording.js for the full rationale.
+  // Recording stream — wraps a CLONE of localStreamRef's (Stream A's)
+  // audio track, not a second real capture. See startRecording below and
+  // the history note in audioRecording.js for why: two concurrent
+  // getUserMedia() sessions on the same microphone is what caused the
+  // live-call audio-quality bug. Never added to any RTCPeerConnection.
   const recordingStreamRef = useRef(null);
 
   // Stops recording and waits for every chunk — including one final
@@ -253,18 +251,22 @@ export function CallProvider({ children }) {
   // participants) from a group call's. `joinedAt` is the SERVER
   // timestamp from "callSessionStarted", not a local clock reading.
   //
-  // CRITICAL FIX for mute/unmute bug:
-  // We MUST use a completely separate getUserMedia() call for recording
-  // because track.clone() shares the same underlying media source. When
-  // the original track is muted (track.enabled = false), the cloned
-  // track stops receiving data too. To record continuously regardless
-  // of mute state, we need an independent stream.
-  //
-  // To avoid browser throttling (the issue that made us try cloning),
-  // we request this AFTER the call has already connected and the first
-  // getUserMedia succeeded, and we request audio-only (no video).
-  // Modern browsers handle two audio-only streams fine.
-  const startRecording = useCallback(async (stream, roomId, joinedAt) => {
+  // SINGLE-CAPTURE ARCHITECTURE (see the history note in
+  // audioRecording.js for the full story): this used to open a SECOND
+  // real getUserMedia() audio stream just for recording, which is what
+  // caused the live-call audio-quality bug — two concurrent captures on
+  // the same microphone fighting over the browser/OS's shared
+  // echo-cancellation + auto-gain-control pipeline, heard by the other
+  // party as choppy/robotic audio while the speaker was actually
+  // talking. Fixed by keeping exactly ONE getUserMedia() call per call
+  // (the `stream` argument, i.e. Stream A — the same stream already on
+  // the peer connection) and cloning its audio track for recording
+  // instead. A cloned MediaStreamTrack is a genuinely independent
+  // instance with its own `enabled` flag — forcing the clone's `enabled`
+  // to `true` and leaving it there means recording keeps running even
+  // while toggleMute sets `enabled = false` on the original, WITHOUT
+  // ever opening a second hardware capture.
+  const startRecording = useCallback((stream, roomId, joinedAt) => {
     // Guard: need an active call stream to confirm the call is live, and
     // a valid roomId to key the idempotency guard.
     if (!stream || !stream.getAudioTracks().length) return;
@@ -275,36 +277,29 @@ export function CallProvider({ children }) {
     }
     activeRecordingSessions.add(roomId);
     try {
-      // Get a completely separate audio stream for recording
-      // This stream is independent of localStreamRef and will continue
-      // capturing audio even when localStreamRef's tracks are muted
-      const recordingStream = await navigator.mediaDevices.getUserMedia({
-        audio: CALL_AUDIO_CONSTRAINTS,
-        video: false // Audio only to avoid conflicts
-      });
-      
+      // Clone the SAME audio track that's already on the peer
+      // connection — no second getUserMedia() call, no second hardware
+      // capture session. Force the clone permanently enabled so muting
+      // the original (what toggleMute does) can never silence recording.
+      const originalTrack = stream.getAudioTracks()[0];
+      const recordingTrack = originalTrack.clone();
+      recordingTrack.enabled = true;
+      const recordingStream = new MediaStream([recordingTrack]);
       recordingStreamRef.current = recordingStream;
-      
-      console.log("[RECORDING AUDIO] Using independent recording stream", {
-        recordingStream: {
-          id: recordingStream.id,
-          tracks: recordingStream.getAudioTracks().length,
-          audioTrack: {
-            id: recordingStream.getAudioTracks()[0]?.id,
-            label: recordingStream.getAudioTracks()[0]?.label,
-            enabled: recordingStream.getAudioTracks()[0]?.enabled,
-            muted: recordingStream.getAudioTracks()[0]?.muted,
-            readyState: recordingStream.getAudioTracks()[0]?.readyState,
-          },
-          settings: recordingStream.getAudioTracks()[0]?.getSettings(),
-        }
+
+      console.log("[RECORDING AUDIO] Using cloned audio track (single capture)", {
+        originalTrackId: originalTrack.id,
+        clonedTrackId: recordingTrack.id,
+        enabled: recordingTrack.enabled,
+        muted: recordingTrack.muted,
+        readyState: recordingTrack.readyState,
+        settings: recordingTrack.getSettings?.(),
       });
 
-      const audioOnly = new MediaStream(recordingStream.getAudioTracks());
       chunkSeqRef.current = 0;
 
       const recorder = createPcmChunkRecorder({
-        stream: audioOnly,
+        stream: recordingStream,
         chunkMs: CALL_AUDIO_CHUNK_MS,
         onChunk: (pcmArrayBuffer, sampleRate) => {
           if (!callRoomIdRef.current) return;
@@ -330,7 +325,9 @@ export function CallProvider({ children }) {
         console.log("[RECORDING AUDIO] Recorder started successfully");
       }).catch((err) => {
         activeRecordingSessions.delete(roomId);
-        // Stop the recording stream if the recorder fails to start
+        // Stop the cloned track if the recorder fails to start — this
+        // only releases the clone, never the original hardware capture
+        // that's still feeding the live call.
         if (recordingStreamRef.current) {
           recordingStreamRef.current.getTracks().forEach((t) => t.stop());
           recordingStreamRef.current = null;
@@ -343,7 +340,7 @@ export function CallProvider({ children }) {
       // itself — a capture error here should never break the actual
       // call the user is trying to have.
       activeRecordingSessions.delete(roomId);
-      console.error("startRecording: Failed to get independent recording stream", err);
+      console.error("startRecording: Failed to clone the call's audio track", err);
     }
   }, []);
 
@@ -486,11 +483,13 @@ export function CallProvider({ children }) {
       track.enabled = !nextMuted;
     });
     
-    // NOTE: The recording stream (recordingStreamRef) is completely
-    // independent - obtained via a separate getUserMedia() call in
-    // startRecording(). Muting the call audio does NOT affect recording.
-    // This is intentional: we want to record everything said during the
-    // call, even when the user is muted (for accurate transcription).
+    // NOTE: The recording stream (recordingStreamRef) wraps a CLONE of
+    // this same track, created in startRecording. A clone's `enabled`
+    // flag is independent per spec, so toggling it here on the original
+    // never touches the clone — recording keeps running, at full quality,
+    // even while muted. This is intentional: we want to record everything
+    // said during the call, even when the user is muted (for accurate
+    // transcription).
     
     setIsMuted(nextMuted);
   }, [isMuted]);
@@ -614,11 +613,11 @@ export function CallProvider({ children }) {
     const onCallSessionStarted = ({ roomId, joinedAt }) => {
       callRoomIdRef.current = roomId;
       callJoinedAtRef.current = joinedAt;
-      // startRecording is async (opens a second getUserMedia for Stream B)
-      // but we intentionally don't await it here — the call is already
-      // live and we don't want recording startup to block or error-propagate
-      // into the socket event handler. Errors inside startRecording are
-      // caught and logged by startRecording itself.
+      // startRecording clones the existing call track synchronously, but
+      // we still don't inline it into this handler's own error path — a
+      // recording-start failure must never be treated as a call failure.
+      // Errors inside startRecording are caught and logged by
+      // startRecording itself.
       startRecording(localStreamRef.current, roomId, joinedAt);
     };
 

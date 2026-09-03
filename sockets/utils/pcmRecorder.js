@@ -216,14 +216,46 @@ export function createPcmChunkRecorder({ stream, chunkMs, onChunk }) {
     logDiagnostics("chunk-emitted");
   }
 
+  // Throttles the per-batch diagnostic log below to roughly once a
+  // second instead of once per worklet message (~11-12x/sec — see
+  // QUANTA_PER_MESSAGE above). Also fixes a real CPU-pressure bug this
+  // diagnostic used to cause: it previously computed peak/rms with
+  // `Math.max(...Array.from(float32Array).map(Math.abs))`, which
+  // allocates two throwaway arrays AND spreads ~4096 numbers as
+  // individual function arguments — on the MAIN thread, 10+ times a
+  // second, for the entire length of every call. That's exactly the
+  // kind of main-thread work the AudioWorklet batching above exists to
+  // avoid competing with (see QUANTA_PER_MESSAGE's comment on dropped
+  // audio callbacks) — on a CPU-constrained device already encoding
+  // video for the same call, it could itself contribute to the dropped-
+  // callback / choppy-audio symptom this file exists to fix, not just
+  // observe it.
+  let lastDiagnosticLogMs = 0;
+
   function handleSamples(float32Array) {
-    // Diagnostic: check if we're actually receiving non-zero audio samples
-    const hasNonZero = float32Array.some(sample => sample !== 0);
-    const peak = Math.max(...Array.from(float32Array).map(Math.abs));
-    const rms = Math.sqrt(float32Array.reduce((sum, s) => sum + s*s, 0) / float32Array.length);
-    
-    console.debug(`[pcmRecorder:sample] length=${float32Array.length}, hasNonZero=${hasNonZero}, peak=${peak.toFixed(4)}, rms=${rms.toFixed(4)}`);
-    
+    // Peak/RMS in a single pass, no intermediate array allocations and no
+    // argument-spreading — O(n) with a fixed, tiny amount of extra work
+    // per sample regardless of batch size.
+    let peak = 0;
+    let sumSquares = 0;
+    let hasNonZero = false;
+    for (let i = 0; i < float32Array.length; i++) {
+      const s = float32Array[i];
+      if (s !== 0) hasNonZero = true;
+      const abs = s < 0 ? -s : s;
+      if (abs > peak) peak = abs;
+      sumSquares += s * s;
+    }
+    const rms = Math.sqrt(sumSquares / float32Array.length);
+
+    const now = Date.now();
+    if (now - lastDiagnosticLogMs >= 1000) {
+      lastDiagnosticLogMs = now;
+      console.debug(
+        `[pcmRecorder:sample] length=${float32Array.length}, hasNonZero=${hasNonZero}, peak=${peak.toFixed(4)}, rms=${rms.toFixed(4)}`
+      );
+    }
+
     floatBuffers.push(float32Array);
     bufferedFrames += float32Array.length;
     totalSamplesCaptured += float32Array.length;
