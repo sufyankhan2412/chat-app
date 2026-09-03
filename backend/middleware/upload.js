@@ -87,34 +87,44 @@ const uploadAttachment = multer({
 // backend/services/transcriptionService.js for how these get turned into
 // a transcript. Calls in this app are mesh WebRTC (GroupCallContext.jsx),
 // so audio never otherwise reaches this server; each participant's own
-// browser records its own mic locally and uploads small rolling chunks
-// here as the call happens, rather than one file at the end. Chunks are
-// appended onto the same on-disk file as they arrive, so a crash, closed
-// tab, or host removal mid-call only risks losing the last few seconds,
-// not the whole recording.
+// browser captures raw PCM locally (see sockets/utils/pcmRecorder.js —
+// deliberately NOT MediaRecorder/Opus, since the browser's own Opus
+// encoder was silently discarding audio quality with no way to reliably
+// configure around it) and uploads small rolling chunks here as the
+// call happens, rather than one file at the end. Chunks are written as
+// their own files as they arrive, so a crash, closed tab, or host
+// removal mid-call only risks losing the last few seconds, not the
+// whole recording.
 // ---------------------------------------------------------------------
 const callAudioDir = path.join(__dirname, "..", "uploads", "call-audio");
 fs.mkdirSync(callAudioDir, { recursive: true });
 
+// Raw PCM chunks are uploaded as a plain Blob (see api.js's
+// uploadCallAudioChunk), which browsers report as
+// "application/octet-stream" — there is no audio/* mimetype for headerless
+// PCM, so this intentionally does NOT require an audio/* prefix the way
+// avatar/attachment uploads do. This route is otherwise already scoped
+// (authenticated, call-specific) so accepting octet-stream here isn't
+// opening up a generic arbitrary-file-upload hole.
 const callAudioFileFilter = (req, file, cb) => {
-  if (!file.mimetype.startsWith("audio/")) {
-    return cb(new Error("Only audio uploads are allowed for call recordings"));
+  if (file.mimetype !== "application/octet-stream") {
+    return cb(new Error("Only raw PCM audio uploads are allowed for call recordings"));
   }
   cb(null, true);
 };
 
-// Buffered in memory (chunks are ~5s of Opus audio, a few hundred KB at
-// most) rather than written straight to disk by multer, since we need to
-// APPEND each chunk onto the same per-join file ourselves — see
-// appendCallAudioChunk below.
+// Buffered in memory (chunks are ~10s of 16-bit mono PCM — roughly
+// 300KB-1MB depending on the captured sample rate) rather than written
+// straight to disk by multer, since we need control over the exact
+// filename/path ourselves — see saveCallAudioChunk below.
 const uploadCallAudioChunk = multer({
   storage: multer.memoryStorage(),
   fileFilter: callAudioFileFilter,
-  limits: { fileSize: 2 * 1024 * 1024 }, // 2MB is generous for a 5s Opus chunk
+  limits: { fileSize: 4 * 1024 * 1024 }, // generous headroom for a 10s PCM chunk at 48kHz mono (~960KB)
 });
 
 // Saves one uploaded chunk as its own file:
-// uploads/call-audio/<roomId>/<userId>-<joinedAtMs>-<seq>.webm, creating
+// uploads/call-audio/<roomId>/<userId>-<joinedAtMs>-<seq>.pcm, creating
 // the room's folder on the session's first chunk. `joinedAtMs` is the
 // SERVER's timestamp for this specific join (handed to the client in the
 // "groupCallJoined" socket event, not read off the client's own clock) —
@@ -122,29 +132,56 @@ const uploadCallAudioChunk = multer({
 // exact Call.participants entry it belongs to, and what anchors this
 // speaker's segments onto the shared call timeline. `seq` is the
 // per-join-session, client-assigned ordinal of this chunk (0, 1, 2, ...).
+// `sampleRate` is the sending browser's actual AudioContext capture rate
+// (see pcmRecorder.js) — not assumed to be a fixed value, since not
+// every OS/hardware combination honors the 48kHz getUserMedia request —
+// persisted alongside the chunks so transcriptionService.js knows the
+// correct rate to use when wrapping the combined raw PCM into a WAV file.
 //
-// IMPORTANT: we do NOT append chunks onto one shared file anymore. Each
-// chunk arrives over its own independent HTTP request, and multiple
-// uploads for the same join session are in flight concurrently (the
-// client doesn't wait for one to finish before sending the next) — so
-// they can land at the server, and therefore get appended, in a
-// different order than they were recorded in. A few out-of-order Opus
-// blocks silently corrupts the WebM stream: ffmpeg/whisper can often
-// still "open" the file but decode little or no usable audio out of it,
-// which is exactly the "no speech was transcribed" symptom with no
-// error ever being thrown. Writing each chunk to its own file — named so
-// it sorts/parses back into the right order — lets
+// IMPORTANT: we do NOT append chunks onto one shared file. Each chunk
+// arrives over its own independent HTTP request, and multiple uploads
+// for the same join session are in flight concurrently (the client
+// doesn't wait for one to finish before sending the next) — so they can
+// land at the server, and therefore get appended, in a different order
+// than they were recorded in. Writing each chunk to its own file — named
+// so it sorts/parses back into the right order — lets
 // transcriptionService.js reassemble them in the CORRECT (recorded)
-// order at transcription time, regardless of upload arrival order.
-function saveCallAudioChunk(roomId, userId, joinedAtMs, seq, buffer) {
+// order at transcription time, regardless of upload arrival order. This
+// matters even more now that chunks are raw PCM rather than Opus: raw
+// PCM has no per-block framing/sync markers at all, so out-of-order
+// bytes wouldn't just corrupt a stream ffmpeg might partially recover —
+// they'd silently splice into different points in time and be
+// transcribed as if they were in the right place.
+function saveCallAudioChunk(roomId, userId, joinedAtMs, seq, buffer, sampleRate) {
   const dir = path.join(callAudioDir, String(roomId));
   fs.mkdirSync(dir, { recursive: true });
   const seqPadded = String(seq).padStart(6, "0");
-  const filePath = path.join(dir, `${userId}-${joinedAtMs}-${seqPadded}.webm`);
+  const filePath = path.join(dir, `${userId}-${joinedAtMs}-${seqPadded}.pcm`);
+  
+  // Diagnostic: verify what we're actually writing to disk
+  console.log(`[audio-chunk:save] roomId=${roomId}, seq=${seq}, buffer.length=${buffer.length}, sampleRate=${sampleRate}`);
+  
   // writeFileSync (not append): each chunk is its own file, and this
   // also makes a client retry of the same chunk idempotent instead of
   // duplicating bytes.
   fs.writeFileSync(filePath, buffer);
+  
+  // Verify the file was written correctly
+  const stat = require('fs').statSync(filePath);
+  console.log(`[audio-chunk:saved] filePath=${path.basename(filePath)}, diskSize=${stat.size}`);
+  if (stat.size !== buffer.length) {
+    console.error(`[audio-chunk:size-mismatch!] Expected ${buffer.length} bytes, but file on disk is ${stat.size} bytes`);
+  }
+
+  // One small sidecar file per join session recording the sample rate —
+  // overwritten on every chunk (cheap; a handful of bytes), so it's
+  // present as soon as the first chunk arrives and self-corrects if a
+  // client ever reported the wrong value on an early chunk.
+  if (Number.isFinite(sampleRate) && sampleRate > 0) {
+    const ratePath = path.join(dir, `${userId}-${joinedAtMs}.rate`);
+    fs.writeFileSync(ratePath, String(Math.round(sampleRate)));
+  }
+
   return filePath;
 }
 

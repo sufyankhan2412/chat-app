@@ -224,6 +224,7 @@ router.post(
       const { roomId } = req.params;
       const joinedAt = Number(req.body.joinedAt);
       const seq = Number(req.body.seq);
+      const sampleRate = Number(req.body.sampleRate);
 
       if (!req.file || !Number.isFinite(joinedAt) || !Number.isFinite(seq)) {
         return res.status(400).json({ message: "Missing audio chunk, joinedAt, or seq" });
@@ -239,7 +240,7 @@ router.post(
         return res.status(403).json({ message: "Not a participant of this call session" });
       }
 
-      saveCallAudioChunk(roomId, req.user._id, joinedAt, seq, req.file.buffer);
+      saveCallAudioChunk(roomId, req.user._id, joinedAt, seq, req.file.buffer, sampleRate);
 
       // Diagnostic log requested for the recording pipeline: pairs with
       // the frontend's "[audio-chunk:upload]" log so a bad recording can
@@ -249,6 +250,7 @@ router.post(
         recordingId: roomId,
         chunkIndex: seq,
         chunkSize: req.file.size,
+        sampleRate,
         receivedAt: new Date().toISOString(),
       });
 

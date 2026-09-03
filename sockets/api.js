@@ -133,12 +133,18 @@ export const getGroupCallChatHistory = (roomId, params = {}) =>
 
 // ---- Group-call audio -> transcript ----
 
-// One ~5s rolling chunk of MY OWN mic audio for this call session (see
-// GroupCallContext.jsx's MediaRecorder). `joinedAt` must be the SERVER
-// timestamp from the "groupCallJoined" socket event, not a client clock
-// reading — the backend uses it to match this upload to the right
-// Call.participants entry and to anchor it on the shared call timeline.
-export const uploadCallAudioChunk = (roomId, joinedAt, seq, blob) => {
+// One ~10s rolling chunk of MY OWN mic audio for this call session (see
+// pcmRecorder.js — raw 16-bit PCM, not a browser-encoded Opus/webm blob,
+// so nothing lossy happens to it before it leaves the browser).
+// `joinedAt` must be the SERVER timestamp from the "groupCallJoined"
+// socket event, not a client clock reading — the backend uses it to
+// match this upload to the right Call.participants entry and to anchor
+// it on the shared call timeline. `sampleRate` is the AudioContext's
+// actual capture rate (see pcmRecorder.js — not assumed to always be
+// 48000, since some hardware/OS combinations don't honor that request),
+// needed by the backend to correctly wrap the raw PCM bytes into a WAV
+// file once all of this session's chunks are combined.
+export const uploadCallAudioChunk = (roomId, joinedAt, seq, pcmArrayBuffer, sampleRate) => {
   const formData = new FormData();
   formData.append("joinedAt", joinedAt);
   // `seq` is this join session's chunk ordinal (0, 1, 2, ...), assigned
@@ -147,7 +153,12 @@ export const uploadCallAudioChunk = (roomId, joinedAt, seq, blob) => {
   // them back in the right order before transcribing, instead of trusting
   // arrival order.
   formData.append("seq", seq);
-  formData.append("chunk", blob, `chunk-${seq}.webm`);
+  formData.append("sampleRate", sampleRate);
+  formData.append(
+    "chunk",
+    new Blob([pcmArrayBuffer], { type: "application/octet-stream" }),
+    `chunk-${seq}.pcm`
+  );
 
   // Diagnostic log requested for the recording pipeline: lets a failed
   // transcription be traced back to exactly which chunk(s), from which
@@ -156,8 +167,8 @@ export const uploadCallAudioChunk = (roomId, joinedAt, seq, blob) => {
     recordingId: roomId,
     joinedAt,
     chunkIndex: seq,
-    chunkSize: blob.size,
-    mimeType: blob.type,
+    chunkSize: pcmArrayBuffer.byteLength,
+    sampleRate,
     timestamp: new Date().toISOString(),
   });
 

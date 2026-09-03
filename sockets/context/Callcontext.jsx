@@ -9,12 +9,8 @@ import React, {
 import { useSocket } from "./Socketcontext";
 import { useAuth } from "./Authcontext";
 import { getUserProfile, uploadCallAudioChunk } from "../api";
-import {
-  CALL_AUDIO_CHUNK_MS,
-  CALL_AUDIO_BITRATE,
-  CALL_AUDIO_CONSTRAINTS,
-  pickSupportedAudioMimeType,
-} from "../utils/audioRecording";
+import { CALL_AUDIO_CHUNK_MS, CALL_AUDIO_CONSTRAINTS } from "../utils/audioRecording";
+import { createPcmChunkRecorder } from "../utils/pcmRecorder";
 
 const CallContext = createContext(null);
 
@@ -28,20 +24,18 @@ export const useCall = () => useContext(CallContext);
 // a call connects), which combined with React 18 StrictMode's dev-mode
 // double effect invocation can produce more than one live subscription
 // long enough for startRecording to run twice for the same call. Two
-// MediaRecorder instances each starting their own chunk-seq counter at 0
-// then upload two different "seq N" blobs for every N — same filename,
+// recorder instances each starting their own chunk-seq counter at 0
+// then upload two different "seq N" chunks for every N — same filename,
 // so only one survives on disk per seq, but WHICHEVER one wins can
 // differ tick to tick, splicing together audio from two unrelated
-// recorder sessions (different init/header segments) into one corrupt
-// WebM. This set is keyed by roomId and lives for the process's whole
-// lifetime, so it catches the duplicate no matter which layer causes it.
+// recorder sessions into one corrupt file. This set is keyed by roomId
+// and lives for the process's whole lifetime, so it catches the
+// duplicate no matter which layer causes it.
 const activeRecordingSessions = new Set();
 
-// CALL_AUDIO_CHUNK_MS, CALL_AUDIO_BITRATE, CALL_AUDIO_CONSTRAINTS, and
-// pickSupportedAudioMimeType now live in ../utils/audioRecording.js,
-// shared with GroupCallContext.jsx, so the two call flows' capture/
-// encode settings can never drift apart — see that file for the full
-// reasoning behind each setting.
+// CALL_AUDIO_CHUNK_MS and CALL_AUDIO_CONSTRAINTS live in
+// ../utils/audioRecording.js, shared with GroupCallContext.jsx, so the
+// two call flows' capture settings can never drift apart.
 
 // Public STUN servers are enough to discover most users' public IP/port so
 // two peers can connect directly. Some networks (symmetric NATs, strict
@@ -109,17 +103,67 @@ export function CallProvider({ children }) {
   const pendingOfferRef = useRef(null); // { from, offer, callType } while ringing
   const pendingCandidatesRef = useRef([]); // ICE candidates that arrive before remote description is set
 
-  // My own mic-only MediaRecorder for this 1:1 call, for transcription —
-  // same mechanism GroupCallContext.jsx uses for group calls, now reused
-  // here so a plain 1:1 audio/video call gets transcribed too. The server
+  // My own mic-only recorder for this 1:1 call, for transcription — same
+  // mechanism GroupCallContext.jsx uses for group calls, now reused here
+  // so a plain 1:1 audio/video call gets transcribed too. The server
   // only tells us to start (via "callSessionStarted", once both sides are
   // actually connected — see Socketmanager.js's startDirectCallRecording)
   // after it has created a `Call` document with a roomId for this call,
   // exactly like a group-call room.
-  const recorderRef = useRef(null);
+  const recorderRef = useRef(null); // { start, stop, flush } from createPcmChunkRecorder
   const chunkSeqRef = useRef(0);
   const callRoomIdRef = useRef(null);
   const callJoinedAtRef = useRef(null);
+  // Every in-flight uploadCallAudioChunk() promise, so hangup can wait
+  // for ALL of them (not just the very last one it triggers) to actually
+  // land on the server before telling the server the call is over — see
+  // stopRecordingAndFlush below for why this matters.
+  const pendingUploadsRef = useRef(new Set());
+  // Dedicated recording stream (Stream B) — completely independent from
+  // localStreamRef (Stream A, used for WebRTC). Obtained via a separate
+  // getUserMedia() call in startRecording with browser audio processing
+  // disabled, so the PCM recorder captures the raw microphone signal
+  // rather than the AEC-processed signal that goes to the peer connection.
+  // Never added to any RTCPeerConnection. See RECORDING_AUDIO_CONSTRAINTS
+  // in audioRecording.js for the full rationale.
+  const recordingStreamRef = useRef(null);
+
+  // Stops recording and waits for every chunk — including one final
+  // flush of whatever's been captured since the last scheduled chunk —
+  // to finish uploading, before resolving.
+  //
+  // WHY THIS MATTERS: previously, stop() fired the last chunk's upload
+  // and moved on without waiting for it. The server decides a call's
+  // audio is transcribable once its "leaveGroupCallRoom"/hangup socket
+  // event arrives; it doesn't separately know whether the browser is
+  // still mid-upload of the tail end of the recording. Add polling
+  // latency or a slow connection and the transcription job can start,
+  // find a shorter file than the real call, and Whisper — which is
+  // prone to inventing text when it's fed a track that cuts off
+  // mid-sentence rather than at actual silence — hallucinates trailing
+  // words that were never said. Awaiting every pending upload here
+  // before the caller proceeds to end the call closes that race for the
+  // one case we fully control: an explicit, clean hangup. (A crashed tab
+  // or killed connection can't be fixed this way — that's what the
+  // backend's settle-polling + missingChunks logging is for.)
+  const stopRecordingAndFlush = useCallback(async () => {
+    const recorder = recorderRef.current;
+    if (!recorder) return;
+    recorder.flush(); // synchronously triggers onChunk -> uploadCallAudioChunk for anything buffered
+    recorder.stop();
+    recorderRef.current = null;
+    if (pendingUploadsRef.current.size) {
+      await Promise.allSettled([...pendingUploadsRef.current]);
+    }
+    // Stop the dedicated recording stream (Stream B) only — never touches
+    // localStreamRef (Stream A / WebRTC call stream). Stopping recording
+    // must NOT mute or end the live call.
+    if (recordingStreamRef.current) {
+      recordingStreamRef.current.getTracks().forEach((t) => t.stop());
+      recordingStreamRef.current = null;
+      console.log("[RECORDING AUDIO] recordingStream stopped");
+    }
+  }, []);
 
   const resetCallState = useCallback(() => {
     if (pcRef.current) {
@@ -133,16 +177,28 @@ export function CallProvider({ children }) {
       localStreamRef.current.getTracks().forEach((track) => track.stop());
       localStreamRef.current = null;
     }
-    // Stops the mic-only recorder for this call — whatever chunks already
-    // uploaded (see startRecording's ondataavailable below) stay on the
-    // server and still get transcribed; this only ends the session.
-    if (recorderRef.current && recorderRef.current.state !== "inactive") {
+    // Best-effort synchronous stop for cleanup paths that can't await
+    // (e.g. a React effect's cleanup function). Explicit hangups should
+    // call stopRecordingAndFlush() themselves BEFORE calling
+    // resetCallState — see endCall below — so this is a backstop, not
+    // the primary mechanism, for the reason explained on
+    // stopRecordingAndFlush above.
+    if (recorderRef.current) {
       recorderRef.current.stop();
     }
     if (callRoomIdRef.current) {
       activeRecordingSessions.delete(callRoomIdRef.current);
     }
     recorderRef.current = null;
+    // Backstop: stop the dedicated recording stream (Stream B) if it
+    // wasn't already stopped by stopRecordingAndFlush. Kept strictly
+    // separate from localStreamRef cleanup above — stopping one must
+    // never affect the other.
+    if (recordingStreamRef.current) {
+      recordingStreamRef.current.getTracks().forEach((t) => t.stop());
+      recordingStreamRef.current = null;
+      console.log("[RECORDING AUDIO] recordingStream stopped (resetCallState backstop)");
+    }
     callRoomIdRef.current = null;
     callJoinedAtRef.current = null;
     chunkSeqRef.current = 0;
@@ -190,13 +246,27 @@ export function CallProvider({ children }) {
 
   // Records MY OWN mic audio (never the remote party's — that never
   // reaches this browser as a separate track) for this call, uploading
-  // small rolling chunks as they're produced. Identical mechanism and
-  // upload endpoint to GroupCallContext.jsx's group-call recording — the
-  // backend's transcription pipeline is generic per-roomId and doesn't
-  // distinguish a 1:1 call's "room" (exactly two participants) from a
-  // group call's. `joinedAt` is the SERVER timestamp from
-  // "callSessionStarted", not a local clock reading.
-  const startRecording = useCallback((stream, roomId, joinedAt) => {
+  // small rolling chunks of raw PCM as they're produced. Identical
+  // mechanism and upload endpoint to GroupCallContext.jsx's group-call
+  // recording — the backend's transcription pipeline is generic per-
+  // roomId and doesn't distinguish a 1:1 call's "room" (exactly two
+  // participants) from a group call's. `joinedAt` is the SERVER
+  // timestamp from "callSessionStarted", not a local clock reading.
+  //
+  // CRITICAL FIX for mute/unmute bug:
+  // We MUST use a completely separate getUserMedia() call for recording
+  // because track.clone() shares the same underlying media source. When
+  // the original track is muted (track.enabled = false), the cloned
+  // track stops receiving data too. To record continuously regardless
+  // of mute state, we need an independent stream.
+  //
+  // To avoid browser throttling (the issue that made us try cloning),
+  // we request this AFTER the call has already connected and the first
+  // getUserMedia succeeded, and we request audio-only (no video).
+  // Modern browsers handle two audio-only streams fine.
+  const startRecording = useCallback(async (stream, roomId, joinedAt) => {
+    // Guard: need an active call stream to confirm the call is live, and
+    // a valid roomId to key the idempotency guard.
     if (!stream || !stream.getAudioTracks().length) return;
     // Idempotency guard — see the comment on activeRecordingSessions
     // above for why a ref alone isn't enough here.
@@ -205,47 +275,75 @@ export function CallProvider({ children }) {
     }
     activeRecordingSessions.add(roomId);
     try {
-      const audioOnly = new MediaStream(stream.getAudioTracks());
-
-      // Was previously hardcoded to "audio/webm;codecs=opus" with no
-      // fallback — on a browser that doesn't support that exact string
-      // (Safari/iOS), `new MediaRecorder(...)` throws synchronously and
-      // this participant's audio is never recorded for the whole call.
-      // See ../utils/audioRecording.js for the fallback list.
-      const mimeType = pickSupportedAudioMimeType();
-      if (!mimeType) {
-        console.error(
-          "startRecording: no supported audio MediaRecorder mimeType on this browser — this call's audio will not be transcribed."
-        );
-        activeRecordingSessions.delete(roomId);
-        return;
-      }
-
-      const recorder = new MediaRecorder(audioOnly, {
-        mimeType,
-        audioBitsPerSecond: CALL_AUDIO_BITRATE,
+      // Get a completely separate audio stream for recording
+      // This stream is independent of localStreamRef and will continue
+      // capturing audio even when localStreamRef's tracks are muted
+      const recordingStream = await navigator.mediaDevices.getUserMedia({
+        audio: CALL_AUDIO_CONSTRAINTS,
+        video: false // Audio only to avoid conflicts
       });
-      chunkSeqRef.current = 0;
-      recorder.ondataavailable = (event) => {
-        if (event.data && event.data.size > 0 && callRoomIdRef.current) {
-          const seq = chunkSeqRef.current++;
-          uploadCallAudioChunk(callRoomIdRef.current, joinedAt, seq, event.data).catch((err) => {
-            console.error("uploadCallAudioChunk error:", err);
-          });
+      
+      recordingStreamRef.current = recordingStream;
+      
+      console.log("[RECORDING AUDIO] Using independent recording stream", {
+        recordingStream: {
+          id: recordingStream.id,
+          tracks: recordingStream.getAudioTracks().length,
+          audioTrack: {
+            id: recordingStream.getAudioTracks()[0]?.id,
+            label: recordingStream.getAudioTracks()[0]?.label,
+            enabled: recordingStream.getAudioTracks()[0]?.enabled,
+            muted: recordingStream.getAudioTracks()[0]?.muted,
+            readyState: recordingStream.getAudioTracks()[0]?.readyState,
+          },
+          settings: recordingStream.getAudioTracks()[0]?.getSettings(),
         }
-      };
-      // Release the guard once this recorder actually stops (call ended,
-      // or an error), so a genuinely new call reusing this same tab can
-      // record again.
-      recorder.onstop = () => activeRecordingSessions.delete(roomId);
-      recorder.start(CALL_AUDIO_CHUNK_MS); // 10s rolling chunks
+      });
+
+      const audioOnly = new MediaStream(recordingStream.getAudioTracks());
+      chunkSeqRef.current = 0;
+
+      const recorder = createPcmChunkRecorder({
+        stream: audioOnly,
+        chunkMs: CALL_AUDIO_CHUNK_MS,
+        onChunk: (pcmArrayBuffer, sampleRate) => {
+          if (!callRoomIdRef.current) return;
+          const seq = chunkSeqRef.current++;
+          const uploadPromise = uploadCallAudioChunk(
+            callRoomIdRef.current,
+            joinedAt,
+            seq,
+            pcmArrayBuffer,
+            sampleRate
+          )
+            .catch((err) => {
+              console.error("uploadCallAudioChunk error:", err);
+            })
+            .finally(() => {
+              pendingUploadsRef.current.delete(uploadPromise);
+            });
+          pendingUploadsRef.current.add(uploadPromise);
+        },
+      });
+
+      recorder.start().then(() => {
+        console.log("[RECORDING AUDIO] Recorder started successfully");
+      }).catch((err) => {
+        activeRecordingSessions.delete(roomId);
+        // Stop the recording stream if the recorder fails to start
+        if (recordingStreamRef.current) {
+          recordingStreamRef.current.getTracks().forEach((t) => t.stop());
+          recordingStreamRef.current = null;
+        }
+        console.error("startRecording error:", err);
+      });
       recorderRef.current = recorder;
     } catch (err) {
       // Recording for transcription is a best-effort add-on to the call
-      // itself — an unsupported codec or similar should never break the
-      // actual call the user is trying to have.
+      // itself — a capture error here should never break the actual
+      // call the user is trying to have.
       activeRecordingSessions.delete(roomId);
-      console.error("startRecording error:", err);
+      console.error("startRecording: Failed to get independent recording stream", err);
     }
   }, []);
 
@@ -271,6 +369,10 @@ export function CallProvider({ children }) {
     });
     localStreamRef.current = stream;
     setLocalStream(stream);
+    console.log("[CALL AUDIO] callStream created", {
+      tracks: stream.getAudioTracks().length,
+      settings: stream.getAudioTracks()[0]?.getSettings(),
+    });
     return stream;
   }, []);
 
@@ -353,7 +455,16 @@ export function CallProvider({ children }) {
   }, [socket, resetCallState]);
 
   // ---- Hang up / cancel (works for any state) ----
-  const endCall = useCallback(() => {
+  // Async now: waits for the recorder's final chunk (whatever was
+  // captured since the last scheduled 10s flush) to actually finish
+  // uploading BEFORE telling the server the call ended. The server
+  // starts polling for "has this room's audio gone quiet" as soon as it
+  // gets that signal — see stopRecordingAndFlush's comment for why
+  // skipping this wait was producing transcripts from a track that was
+  // still mid-upload, which Whisper fills in with invented (hallucinated)
+  // text rather than failing cleanly.
+  const endCall = useCallback(async () => {
+    await stopRecordingAndFlush();
     if (socket) {
       if (callState === CALL_STATE.OUTGOING && remoteUser?._id) {
         socket.emit("cancelCall", { receiverId: remoteUser._id });
@@ -364,14 +475,23 @@ export function CallProvider({ children }) {
       }
     }
     resetCallState();
-  }, [socket, callState, remoteUser, resetCallState]);
+  }, [socket, callState, remoteUser, resetCallState, stopRecordingAndFlush]);
 
   const toggleMute = useCallback(() => {
     if (!localStreamRef.current) return;
     const nextMuted = !isMuted;
+    
+    // Mute/unmute the WebRTC call stream (what the remote user hears)
     localStreamRef.current.getAudioTracks().forEach((track) => {
       track.enabled = !nextMuted;
     });
+    
+    // NOTE: The recording stream (recordingStreamRef) is completely
+    // independent - obtained via a separate getUserMedia() call in
+    // startRecording(). Muting the call audio does NOT affect recording.
+    // This is intentional: we want to record everything said during the
+    // call, even when the user is muted (for accurate transcription).
+    
     setIsMuted(nextMuted);
   }, [isMuted]);
 
@@ -494,6 +614,11 @@ export function CallProvider({ children }) {
     const onCallSessionStarted = ({ roomId, joinedAt }) => {
       callRoomIdRef.current = roomId;
       callJoinedAtRef.current = joinedAt;
+      // startRecording is async (opens a second getUserMedia for Stream B)
+      // but we intentionally don't await it here — the call is already
+      // live and we don't want recording startup to block or error-propagate
+      // into the socket event handler. Errors inside startRecording are
+      // caught and logged by startRecording itself.
       startRecording(localStreamRef.current, roomId, joinedAt);
     };
 

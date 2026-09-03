@@ -41,7 +41,7 @@ const TRANSCRIPTION_MAX_WAIT_MS = 45000;
 function snapshotAudioDir(roomId) {
   const dir = path.join(callAudioDir, String(roomId));
   if (!fs.existsSync(dir)) return "0:";
-  const files = fs.readdirSync(dir).filter((f) => f.endsWith(".webm") && !f.includes(".combined."));
+  const files = fs.readdirSync(dir).filter((f) => f.endsWith(".pcm"));
   // Name + size per file (not just count) so a chunk being overwritten
   // in place — same seq, different bytes — also counts as "still
   // changing", not just new files appearing.
