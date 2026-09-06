@@ -11,6 +11,7 @@ import { useAuth } from "./Authcontext";
 import { createCallLink, getGroupCallChatHistory, uploadCallAudioChunk } from "../api";
 import { CALL_AUDIO_CHUNK_MS, CALL_AUDIO_CONSTRAINTS } from "../utils/audioRecording";
 import { createPcmChunkRecorder } from "../utils/pcmRecorder";
+import { ICE_SERVERS } from "../utils/iceServers";
 
 const GroupCallContext = createContext(null);
 
@@ -24,22 +25,6 @@ const activeRecordingSessions = new Set();
 // CALL_AUDIO_CHUNK_MS and CALL_AUDIO_CONSTRAINTS live in
 // ../utils/audioRecording.js, shared with Callcontext.jsx, so the two
 // call flows' capture settings can never drift apart.
-
-// Same ICE server setup as the 1:1 call flow (Callcontext.jsx) — see that
-// file's comment for why a TURN relay matters in production.
-const ICE_SERVERS = [
-  { urls: "stun:stun.l.google.com:19302" },
-  { urls: "stun:stun1.l.google.com:19302" },
-  ...(import.meta.env.VITE_TURN_URL
-    ? [
-        {
-          urls: import.meta.env.VITE_TURN_URL,
-          username: import.meta.env.VITE_TURN_USERNAME,
-          credential: import.meta.env.VITE_TURN_CREDENTIAL,
-        },
-      ]
-    : []),
-];
 
 function describeMediaError(err) {
   if (err?.name === "InsecureContextError") return err.message;
@@ -131,6 +116,7 @@ export function GroupCallProvider({ children }) {
   const stopRecordingAndFlush = useCallback(async () => {
     const recorder = recorderRef.current;
     if (!recorder) return;
+    const currentRoomId = roomIdRef.current;
     recorder.flush();
     recorder.stop();
     recorderRef.current = null;
@@ -145,7 +131,12 @@ export function GroupCallProvider({ children }) {
       recordingStreamRef.current = null;
       console.log("[RECORDING AUDIO] recordingStream stopped");
     }
-  }, []);
+    // Ground-truth signal for the server's transcription job — see the
+    // identical emit + comment in Callcontext.jsx's stopRecordingAndFlush.
+    if (currentRoomId && socket) {
+      socket.emit("recordingFlushed", { roomId: currentRoomId });
+    }
+  }, [socket]);
 
   const cleanupPeer = useCallback((peerId) => {
     const pc = pcsRef.current.get(peerId);
@@ -271,6 +262,34 @@ export function GroupCallProvider({ children }) {
         });
       };
 
+      // Mesh calls create one independent RTCPeerConnection per remote
+      // participant, so a path that fails to ONE peer (e.g. they're on a
+      // different network with no reachable candidate pair — the classic
+      // case being a phone on mobile-carrier NAT with no TURN server
+      // configured, see ICE_SERVERS above) must be handled per-peer: it
+      // shouldn't silently sit "connected" in our state with no stream
+      // ever arriving, and it must not be allowed to affect any of the
+      // OTHER peer connections in the same room, which may be working
+      // fine. Previously there was no handler here at all, so a failed
+      // mesh link to one participant was completely invisible — that
+      // participant's tile would just stay on the placeholder avatar
+      // forever with nothing telling you why.
+      pc.onconnectionstatechange = () => {
+        if (pc.connectionState === "failed") {
+          console.error(
+            `[GroupCall] connection to peer ${peerId} failed — ICE could not find a usable path. ` +
+              "Likely cause: that participant is on a different/restrictive network (e.g. mobile " +
+              "data/CGNAT) and no TURN server is configured (VITE_TURN_URL)."
+          );
+          setCallError(
+            "Lost connection to a participant. If they're on a different network (e.g. mobile data), this app needs a TURN server configured to connect reliably."
+          );
+          cleanupPeer(peerId);
+        }
+        // "disconnected" can be a transient blip that recovers on its
+        // own — only "failed" is treated as terminal per the WebRTC spec.
+      };
+
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach((track) => {
           pc.addTrack(track, localStreamRef.current);
@@ -280,7 +299,7 @@ export function GroupCallProvider({ children }) {
       pcsRef.current.set(peerId, pc);
       return pc;
     },
-    [socket]
+    [socket, cleanupPeer]
   );
 
   // Records MY OWN mic audio (never anyone else's — that never reaches
@@ -507,10 +526,10 @@ export function GroupCallProvider({ children }) {
   const toggleMute = useCallback(() => {
     if (!localStreamRef.current) return;
     const next = !isMuted;
-    
+
     // Mute/unmute the WebRTC call stream (what remote users hear)
     localStreamRef.current.getAudioTracks().forEach((t) => (t.enabled = !next));
-    
+
     // NOTE: The recording stream (recordingStreamRef) wraps a CLONE of
     // this same track, created in startRecording. A clone's `enabled`
     // flag is independent per spec, so toggling it here on the original
@@ -518,7 +537,7 @@ export function GroupCallProvider({ children }) {
     // even while muted. This is intentional: we want to record everything
     // said during the call, even when the user is muted (for accurate
     // transcription).
-    
+
     setIsMuted(next);
   }, [isMuted]);
 
@@ -663,10 +682,14 @@ export function GroupCallProvider({ children }) {
     };
 
     // The host removed me — the server has already torn down its side of
-    // the room, so just tear down our own media/peers and surface why,
-    // rather than sitting on a call the host no longer wants us in.
-    const onRemovedFromCall = () => {
+    // the room and sealed/scheduled transcription for it (see
+    // Socketmanager.js's removeParticipant), so our own trailing audio
+    // needs to be flushed and confirmed BEFORE tearing down, not just
+    // fire-and-forgotten via resetAll's synchronous backstop — same
+    // reasoning as leaveCall below.
+    const onRemovedFromCall = async () => {
       setCallError("The host removed you from this call.");
+      await stopRecordingAndFlush();
       resetAll();
     };
 
@@ -687,7 +710,7 @@ export function GroupCallProvider({ children }) {
       socket.off("groupCallError", onGroupCallError);
       socket.off("removedFromCall", onRemovedFromCall);
     };
-  }, [socket, getOrCreatePeerConnection, cleanupPeer, resetAll, user, startRecording]);
+  }, [socket, getOrCreatePeerConnection, cleanupPeer, resetAll, user, startRecording, stopRecordingAndFlush]);
 
   // Auto-clear transient error banner.
   useEffect(() => {

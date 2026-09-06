@@ -11,6 +11,7 @@ import { useAuth } from "./Authcontext";
 import { getUserProfile, uploadCallAudioChunk } from "../api";
 import { CALL_AUDIO_CHUNK_MS, CALL_AUDIO_CONSTRAINTS } from "../utils/audioRecording";
 import { createPcmChunkRecorder } from "../utils/pcmRecorder";
+import { ICE_SERVERS } from "../utils/iceServers";
 
 const CallContext = createContext(null);
 
@@ -36,29 +37,6 @@ const activeRecordingSessions = new Set();
 // CALL_AUDIO_CHUNK_MS and CALL_AUDIO_CONSTRAINTS live in
 // ../utils/audioRecording.js, shared with GroupCallContext.jsx, so the
 // two call flows' capture settings can never drift apart.
-
-// Public STUN servers are enough to discover most users' public IP/port so
-// two peers can connect directly. Some networks (symmetric NATs, strict
-// corporate firewalls) need a TURN (relay) server as well — add one here
-// (e.g. Twilio, Metered, or your own coturn) for production use:
-//   { urls: "turn:your-turn-server:3478", username: "...", credential: "..." }
-const ICE_SERVERS = [
-  { urls: "stun:stun.l.google.com:19302" },
-  { urls: "stun:stun1.l.google.com:19302" },
-  // Set these in sockets/.env (see README) to add a TURN relay. Without one,
-  // two devices on different networks (e.g. laptop on wifi + phone on
-  // mobile data, or a wifi with client isolation) usually cannot connect
-  // even though STUN lets them "see" each other.
-  ...(import.meta.env.VITE_TURN_URL
-    ? [
-        {
-          urls: import.meta.env.VITE_TURN_URL,
-          username: import.meta.env.VITE_TURN_USERNAME,
-          credential: import.meta.env.VITE_TURN_CREDENTIAL,
-        },
-      ]
-    : []),
-];
 
 // idle -> outgoing (I called) | incoming (they called me)
 // outgoing -> ongoing (answered) | idle (rejected/cancelled/failed)
@@ -147,6 +125,7 @@ export function CallProvider({ children }) {
   const stopRecordingAndFlush = useCallback(async () => {
     const recorder = recorderRef.current;
     if (!recorder) return;
+    const roomId = callRoomIdRef.current;
     recorder.flush(); // synchronously triggers onChunk -> uploadCallAudioChunk for anything buffered
     recorder.stop();
     recorderRef.current = null;
@@ -161,7 +140,16 @@ export function CallProvider({ children }) {
       recordingStreamRef.current = null;
       console.log("[RECORDING AUDIO] recordingStream stopped");
     }
-  }, []);
+    // Tell the server every chunk we recorded has actually landed, so its
+    // transcription job can stop guessing from a quiet gap on disk (which
+    // is ambiguous — a normal ~10s wait between scheduled chunks looks
+    // identical to "recording actually stopped") and instead wait for
+    // real confirmation from both sides of the call. See
+    // Socketmanager.js's waitForAudioUploadsToSettle.
+    if (roomId && socket) {
+      socket.emit("recordingFlushed", { roomId });
+    }
+  }, [socket]);
 
   const resetCallState = useCallback(() => {
     if (pcRef.current) {
@@ -229,17 +217,40 @@ export function CallProvider({ children }) {
         setRemoteStream(event.streams[0]);
       };
 
+      // Previously a no-op: "failed"/"disconnected"/"closed" were all
+      // caught but nothing was done with them, so a call that couldn't
+      // establish a working media path (most commonly: two peers on
+      // different networks — e.g. one on mobile data — with no TURN
+      // relay configured, see ICE_SERVERS above) looked "connected" in
+      // our own UI state forever, with silent/missing audio and no
+      // indication of why. "failed" specifically means the ICE agent
+      // exhausted every candidate pair and could not find one that
+      // works — per the WebRTC spec this is terminal and will not
+      // self-recover, unlike "disconnected" (often a brief network
+      // blip that reconnects on its own), so only "failed" surfaces an
+      // error and ends the call here.
       pc.onconnectionstatechange = () => {
-        if (["failed", "disconnected", "closed"].includes(pc.connectionState)) {
-          // Let the natural endCall/cleanup flow handle it if we already
-          // hung up; otherwise this covers the "network just died" case.
+        if (pc.connectionState === "failed") {
+          console.error(
+            "[Call] RTCPeerConnection connectionState=failed — ICE could not find a usable path. " +
+              "This is the classic symptom of two peers on different networks (e.g. one on mobile " +
+              "data/CGNAT) with no TURN server configured. Set VITE_TURN_URL/VITE_TURN_USERNAME/" +
+              "VITE_TURN_CREDENTIAL."
+          );
+          setCallError(
+            "Call connection failed. If you're on different networks (e.g. one on mobile data), this app needs a TURN server configured to connect reliably."
+          );
+          resetCallState();
         }
+        // "disconnected" is often transient (brief network hiccup) and
+        // can recover on its own without intervention — intentionally
+        // not treated as fatal here, only "failed" is.
       };
 
       pcRef.current = pc;
       return pc;
     },
-    [socket]
+    [socket, resetCallState]
   );
 
   // Records MY OWN mic audio (never the remote party's — that never
@@ -477,12 +488,12 @@ export function CallProvider({ children }) {
   const toggleMute = useCallback(() => {
     if (!localStreamRef.current) return;
     const nextMuted = !isMuted;
-    
+
     // Mute/unmute the WebRTC call stream (what the remote user hears)
     localStreamRef.current.getAudioTracks().forEach((track) => {
       track.enabled = !nextMuted;
     });
-    
+
     // NOTE: The recording stream (recordingStreamRef) wraps a CLONE of
     // this same track, created in startRecording. A clone's `enabled`
     // flag is independent per spec, so toggling it here on the original
@@ -490,7 +501,7 @@ export function CallProvider({ children }) {
     // even while muted. This is intentional: we want to record everything
     // said during the call, even when the user is muted (for accurate
     // transcription).
-    
+
     setIsMuted(nextMuted);
   }, [isMuted]);
 
@@ -578,7 +589,15 @@ export function CallProvider({ children }) {
       resetCallState();
     };
 
-    const onCallEnded = () => {
+    // IMPORTANT: awaits stopRecordingAndFlush() before resetting, same as
+    // endCall() does for the side that actually hangs up. Without this,
+    // the side that DIDN'T hang up only ever gets a fire-and-forget
+    // recorder.stop() (see resetCallState's backstop), racing its last
+    // buffered chunk's upload against the server's transcription job
+    // instead of guaranteeing it lands first — that race is exactly what
+    // was cutting the tail end off recordings/transcripts.
+    const onCallEnded = async () => {
+      await stopRecordingAndFlush();
       resetCallState();
     };
 
@@ -592,7 +611,13 @@ export function CallProvider({ children }) {
     // other side doing it. Either way I hand off into the group room the
     // same way: stop the 1:1 media/connection, let CallModal pick up
     // `groupUpgrade` and join via GroupCallContext.
-    const onCallUpgraded = ({ roomId, callType: upgradedType, link }) => {
+    const onCallUpgraded = async ({ roomId, callType: upgradedType, link }) => {
+      // Same reasoning as onCallEnded above: the server seals and
+      // transcribes the 1:1 portion of this call the instant the upgrade
+      // happens (see Socketmanager.js's upgradeCallToGroup), so this
+      // side's own trailing audio needs to be flushed and confirmed
+      // BEFORE we tear down, not just fire-and-forgotten.
+      await stopRecordingAndFlush();
       resetCallState();
       setAddingPeople(false);
       setGroupUpgrade({ roomId, callType: upgradedType, link });
@@ -645,7 +670,7 @@ export function CallProvider({ children }) {
       socket.off("callSessionStarted", onCallSessionStarted);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [socket, callState, resetCallState, addingPeople, startRecording]);
+  }, [socket, callState, resetCallState, addingPeople, startRecording, stopRecordingAndFlush]);
 
   // Auto-clear a transient error banner after a few seconds.
   useEffect(() => {

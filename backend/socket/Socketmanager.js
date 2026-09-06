@@ -34,9 +34,80 @@ const { callAudioDir } = require("../middleware/upload");
 // existing missingChunks/duplicateChunks logging still records exactly
 // what was and wasn't present.
 const TRANSCRIPTION_INITIAL_DELAY_MS = 5000; // don't even start polling immediately — give the client's own stop()/flush a moment
-const TRANSCRIPTION_POLL_INTERVAL_MS = 2000;
-const TRANSCRIPTION_STABLE_CHECKS_REQUIRED = 3; // ~6s of no new files before we call it settled
+const TRANSCRIPTION_POLL_INTERVAL_MS = 3000;
+// IMPORTANT: this must stay comfortably ABOVE CALL_AUDIO_CHUNK_MS (the
+// client's scheduled chunk interval, currently 10s — see
+// utils/audioRecording.js). A perfectly normal gap between two
+// on-schedule chunks (nothing wrong, recording still running) looks
+// IDENTICAL to "recording actually stopped" to this quiet-time
+// heuristic. Previously POLL_INTERVAL_MS(2000) * STABLE_CHECKS(3) = 6000ms
+// — LESS than the 10000ms chunk interval — so on a call with any upload
+// latency at all, a single normal inter-chunk gap could falsely look
+// "settled" and fire transcription while the call was still ongoing
+// (confirmed via server logs: [audio-session:finalize] ran with only 1
+// of 4 chunks on disk, followed by more chunks for that same session
+// landing afterward). 3000ms * 6 = 18000ms comfortably clears a single
+// 10s gap plus normal network jitter.
+const TRANSCRIPTION_STABLE_CHECKS_REQUIRED = 6; // ~18s of no new files before we call it settled
 const TRANSCRIPTION_MAX_WAIT_MS = 45000;
+
+// Ground truth, when we have it, beats the file-system quiet-time guess
+// above. Every client calls socket.emit("recordingFlushed", { roomId })
+// once its OWN stopRecordingAndFlush() has confirmed every one of its
+// chunks actually landed on the server (see Callcontext.jsx /
+// GroupCallContext.jsx). Once every participant who was ever in this
+// room has acked, we know for certain nothing more is coming and can
+// proceed immediately — no need to guess from a quiet gap on disk, which
+// is unreliable precisely because a NORMAL ~10s gap between scheduled
+// chunks (CALL_AUDIO_CHUNK_MS) looks identical to "recording actually
+// stopped" to that heuristic. The quiet-time poll below still runs as a
+// fallback for participants who never get the chance to ack cleanly
+// (crashed tab, killed connection, closed laptop lid) — same as before.
+const recordingFlushAcks = new Map(); // roomId -> Set<userId>
+
+// ---------------------------------------------------------------------
+// Disconnect grace period.
+//
+// WHY THIS EXISTS: a Socket.IO "disconnect" event does NOT mean the call
+// itself ended. Calls in this app are WebRTC (mesh or 1:1) — once
+// ICE/SRTP is established, audio/video keeps flowing directly between
+// peers regardless of whether the signaling socket is still open. A
+// socket can drop and reconnect on its own (Socket.IO auto-reconnects)
+// for all sorts of transient reasons that have nothing to do with the
+// call: a flaky dev tunnel, a brief network blip, a backgrounded tab's
+// connection being throttled, etc. The call the two people are having
+// keeps going the entire time this happens.
+//
+// Previously, "disconnect" immediately called finalizeDirectCallRecording
+// / leaveGroupCallRoom — which marks the Call document "ended" and
+// SCHEDULES TRANSCRIPTION right then, even though the real call (and its
+// audio recording) was still very much in progress. This is exactly what
+// produced transcripts that only covered the first few seconds of a much
+// longer call: transcription ran against whatever audio chunks had
+// landed by that point, and every chunk uploaded afterward (for a call
+// that, from the users' perspective, never stopped) arrived too late to
+// be included. Confirmed directly in server logs: an
+// "[audio-session:finalize]" log showing only 1 of 4 expected chunks
+// present, followed immediately by 3 more chunks for that same session
+// landing on disk seconds later.
+//
+// FIX: don't act on a disconnect immediately. Wait DISCONNECT_GRACE_MS —
+// if the same user reconnects within that window (their very next
+// "connection" handshake), treat the drop as transient and cancel the
+// pending finalize entirely. Only if they're still gone once the grace
+// period elapses do we treat the call as actually over and run the same
+// finalize/schedule-transcription logic as before.
+const DISCONNECT_GRACE_MS = 15000;
+const pendingDisconnectFinalize = new Map(); // userId -> NodeJS.Timeout
+
+function cancelPendingDisconnectFinalize(userId) {
+  const key = String(userId);
+  const timeoutHandle = pendingDisconnectFinalize.get(key);
+  if (timeoutHandle) {
+    clearTimeout(timeoutHandle);
+    pendingDisconnectFinalize.delete(key);
+  }
+}
 
 function snapshotAudioDir(roomId) {
   const dir = path.join(callAudioDir, String(roomId));
@@ -54,13 +125,28 @@ function snapshotAudioDir(roomId) {
     .join("|");
 }
 
-function waitForAudioUploadsToSettle(roomId) {
+// `expectedUserIds` is every userId who ever joined this room (both sides
+// of a direct call, or every group-call participant) — passed in by each
+// call site below, which already has this list from the Call document or
+// the callLogMeta it's holding. Checked on every poll tick: as soon as
+// all of them have acked via "recordingFlushed", we resolve immediately
+// regardless of the file-system quiet-time state, since that's strictly
+// stronger evidence than an inferred quiet gap.
+function waitForAudioUploadsToSettle(roomId, expectedUserIds = []) {
   return new Promise((resolve) => {
     const startedAt = Date.now();
     let lastSnapshot = null;
     let stableCount = 0;
 
     const poll = () => {
+      const acked = recordingFlushAcks.get(roomId);
+      const allAcked =
+        expectedUserIds.length > 0 &&
+        expectedUserIds.every((id) => acked?.has(String(id)));
+      if (allAcked) {
+        return resolve();
+      }
+
       const snapshot = snapshotAudioDir(roomId);
       const elapsed = Date.now() - startedAt;
 
@@ -87,8 +173,11 @@ function waitForAudioUploadsToSettle(roomId) {
   });
 }
 
-function scheduleTranscription(roomId, io) {
-  waitForAudioUploadsToSettle(roomId).then(() => enqueueGroupCallTranscription(roomId, io));
+function scheduleTranscription(roomId, io, expectedUserIds = []) {
+  waitForAudioUploadsToSettle(roomId, expectedUserIds).then(() => {
+    recordingFlushAcks.delete(roomId);
+    enqueueGroupCallTranscription(roomId, io);
+  });
 }
 
 // In-memory map of userId -> Set<socketId> for currently connected users
@@ -271,7 +360,7 @@ function finalizeDirectCallRecording(io, meta) {
     }
   )
     .then(() => {
-      scheduleTranscription(roomId, io);
+      scheduleTranscription(roomId, io, [meta.callerId, meta.calleeId]);
     })
     .catch((err) => console.error(`finalizeDirectCallRecording(${roomId}) error:`, err.message));
 }
@@ -294,6 +383,16 @@ function initSocket(io) {
   io.on("connection", async (socket) => {
     const userId = socket.userId;
     const userKey = String(userId);
+
+    // This user just (re)connected. If a PREVIOUS disconnect from this
+    // same user was sitting in its grace period waiting to decide
+    // whether to finalize an in-progress call, cancel that now — they're
+    // back, so whatever call they were on (if any) never actually ended
+    // from their side. See the DISCONNECT_GRACE_MS comment above for why
+    // this matters: without it, a transient drop on a flaky connection
+    // (e.g. a dev tunnel) would finalize/transcribe a call that both
+    // people were still actively having.
+    cancelPendingDisconnectFinalize(userKey);
 
     if (!onlineUsers.has(userKey)) {
       onlineUsers.set(userKey, new Set());
@@ -459,6 +558,21 @@ try {
     socket.on("stopTyping", ({ receiverId }) => {
       const receiverRoom = getUserRoomName(receiverId);
       io.to(receiverRoom).emit("stopTyping", { from: userId });
+    });
+
+    // Fired by Callcontext.jsx / GroupCallContext.jsx once THIS
+    // participant's own stopRecordingAndFlush() has confirmed every chunk
+    // it recorded for this room has actually landed on the server. See
+    // waitForAudioUploadsToSettle above for why this matters: it's ground
+    // truth that lets the transcription job stop guessing from a
+    // file-system quiet gap, which is fundamentally ambiguous while chunks
+    // are still legitimately arriving every ~10s.
+    socket.on("recordingFlushed", ({ roomId }) => {
+      if (!roomId) return;
+      if (!recordingFlushAcks.has(roomId)) {
+        recordingFlushAcks.set(roomId, new Set());
+      }
+      recordingFlushAcks.get(roomId).add(userKey);
     });
 
     // ---- WebRTC call signaling (1:1 audio/video calls) ----
@@ -914,7 +1028,11 @@ try {
         }
 
         if (roomNowEmpty) {
-          scheduleTranscription(roomId, io);
+          scheduleTranscription(
+            roomId,
+            io,
+            call.participants.map((p) => String(p.user?._id || p.user))
+          );
         }
 
         io.to(getGroupCallRoomName(roomId)).emit("peerLeft", {
@@ -983,7 +1101,11 @@ try {
           }
 
           if (roomNowEmpty) {
-            scheduleTranscription(roomId, io);
+            scheduleTranscription(
+              roomId,
+              io,
+              call.participants.map((p) => String(p.user?._id || p.user))
+            );
           }
         }
       } catch (err) {
@@ -1001,56 +1123,94 @@ try {
     });
 
     // ---- Disconnect ----
+    //
+    // IMPORTANT: this no longer finalizes an in-progress call
+    // immediately. See the DISCONNECT_GRACE_MS comment near the top of
+    // this file for the full reasoning — in short, a dropped SOCKET is
+    // not the same thing as an ended CALL (WebRTC media survives a
+    // signaling reconnect), and treating them as the same thing is what
+    // was causing transcription to run on partial audio for calls that
+    // were, from the users' point of view, still going.
+    //
+    // Everything that used to happen synchronously here now happens
+    // after a grace period, and only if this user hasn't reconnected by
+    // then (checked again at execution time, since a reconnect could
+    // land at any point during the wait).
     socket.on("disconnect", async () => {
       const userKey = String(userId);
       const userSockets = onlineUsers.get(userKey);
-      if (userSockets) {
-        userSockets.delete(socket.id);
-if (userSockets.size === 0) {
-  onlineUsers.delete(userKey);
-  const lastSeen = new Date();
-  try {
-    const stillOnline = onlineUsers.has(userKey);
-    await User.findByIdAndUpdate(userId, {
-      isOnline: stillOnline,
-      ...(stillOnline ? {} : { lastSeen }),
-    });
-  } catch (err) {
-    console.error("Error setting user offline:", err.message);
-  }
-  socket.broadcast.emit("userOffline", { userId, lastSeen });
+      if (!userSockets) return;
 
-  // If this user dropped mid-call (closed the tab, lost connection,
-  // etc.), let their call partner know instead of leaving them stuck
-  // on a frozen video feed — and still log the call (completed if it
-  // had been answered, missed otherwise) so it doesn't just vanish.
-  const otherUserId = clearActiveCall(userKey);
-  if (otherUserId) {
-    const roomName = getRoomName(userKey, otherUserId);
-    const meta = callLogMeta.get(roomName);
-    callLogMeta.delete(roomName);
-    if (meta) {
-      logCall(io, {
-        callerId: meta.callerId,
-        calleeId: meta.calleeId,
-        callType: meta.callType,
-        status: meta.answeredAt ? "completed" : "missed",
-        startedAt: meta.answeredAt,
-      });
-      finalizeDirectCallRecording(io, meta);
-    }
-    io.to(getUserRoomName(otherUserId)).emit("callEnded", {
-      reason: "disconnected",
-    });
-  }
+      userSockets.delete(socket.id);
+      if (userSockets.size !== 0) return; // another tab/device is still connected — nothing to do
 
-  // Same cleanup for a dropped group call — records leftAt/duration and
-  // seals the log if that was the last person in the room.
-  if (socket.data.activeCallRoom) {
-    await leaveGroupCallRoom(socket.data.activeCallRoom);
-  }
-}
+      onlineUsers.delete(userKey);
+      const lastSeen = new Date();
+      try {
+        const stillOnline = onlineUsers.has(userKey);
+        await User.findByIdAndUpdate(userId, {
+          isOnline: stillOnline,
+          ...(stillOnline ? {} : { lastSeen }),
+        });
+      } catch (err) {
+        console.error("Error setting user offline:", err.message);
       }
+      socket.broadcast.emit("userOffline", { userId, lastSeen });
+
+      // Snapshot what this user was doing call-wise at the moment of
+      // disconnect — read now, acted on later (if at all), since the
+      // in-memory maps could otherwise change under us during the wait.
+      const otherUserIdAtDisconnect = activeCalls.get(userKey);
+      const activeCallRoomAtDisconnect = socket.data.activeCallRoom;
+
+      if (!otherUserIdAtDisconnect && !activeCallRoomAtDisconnect) {
+        // Not on any call — nothing to protect with a grace period.
+        return;
+      }
+
+      const timeoutHandle = setTimeout(async () => {
+        pendingDisconnectFinalize.delete(userKey);
+
+        // Re-check at execution time: did this user (any tab) reconnect
+        // while we were waiting? If so, this disconnect was transient —
+        // do nothing. (cancelPendingDisconnectFinalize on "connection"
+        // is the normal path for this, but this guard covers any timing
+        // edge case where the timer fires around the same moment.)
+        if (onlineUsers.has(userKey)) return;
+
+        // If this user dropped mid-call (closed the tab, lost connection
+        // for real, etc.), let their call partner know instead of
+        // leaving them stuck on a frozen video feed — and still log the
+        // call (completed if it had been answered, missed otherwise) so
+        // it doesn't just vanish.
+        const otherUserId = clearActiveCall(userKey);
+        if (otherUserId) {
+          const roomName = getRoomName(userKey, otherUserId);
+          const meta = callLogMeta.get(roomName);
+          callLogMeta.delete(roomName);
+          if (meta) {
+            logCall(io, {
+              callerId: meta.callerId,
+              calleeId: meta.calleeId,
+              callType: meta.callType,
+              status: meta.answeredAt ? "completed" : "missed",
+              startedAt: meta.answeredAt,
+            });
+            finalizeDirectCallRecording(io, meta);
+          }
+          io.to(getUserRoomName(otherUserId)).emit("callEnded", {
+            reason: "disconnected",
+          });
+        }
+
+        // Same cleanup for a dropped group call — records leftAt/duration
+        // and seals the log if that was the last person in the room.
+        if (activeCallRoomAtDisconnect) {
+          await leaveGroupCallRoom(activeCallRoomAtDisconnect);
+        }
+      }, DISCONNECT_GRACE_MS);
+
+      pendingDisconnectFinalize.set(userKey, timeoutHandle);
     });
   });
 }
