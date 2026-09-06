@@ -26,6 +26,48 @@ const activeRecordingSessions = new Set();
 // ../utils/audioRecording.js, shared with Callcontext.jsx, so the two
 // call flows' capture settings can never drift apart.
 
+// ---------------------------------------------------------------------
+// Chunk-upload retry with backoff. Identical mechanism/reasoning to the
+// one in Callcontext.jsx — see that file's comment for the full story.
+// Short version: a single chunk's upload can fail outright from a
+// transient network blip (a dev tunnel briefly dropping the connection,
+// a CORS preflight failing because the underlying connection was gone,
+// a mobile network handoff) that has nothing to do with the recording
+// pipeline itself. Previously that chunk was just logged and lost
+// forever — for a participant on a flaky connection this meant most of
+// their audio never reached the server, even though pcmRecorder.js's
+// own diagnostics confirmed it was capturing that audio just fine
+// client-side. Retrying with backoff recovers exactly this case at
+// effectively no cost when the network is healthy.
+// ---------------------------------------------------------------------
+const CHUNK_UPLOAD_MAX_RETRIES = 3;
+const CHUNK_UPLOAD_RETRY_DELAY_MS = 1000;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function uploadChunkWithRetry(...args) {
+  let lastErr;
+  for (let attempt = 0; attempt <= CHUNK_UPLOAD_MAX_RETRIES; attempt++) {
+    try {
+      return await uploadCallAudioChunk(...args);
+    } catch (err) {
+      lastErr = err;
+      if (attempt < CHUNK_UPLOAD_MAX_RETRIES) {
+        console.warn(
+          `[uploadCallAudioChunk] attempt ${attempt + 1} failed, retrying in ${
+            CHUNK_UPLOAD_RETRY_DELAY_MS * (attempt + 1)
+          }ms:`,
+          err.message
+        );
+        await sleep(CHUNK_UPLOAD_RETRY_DELAY_MS * (attempt + 1));
+      }
+    }
+  }
+  throw lastErr;
+}
+
 function describeMediaError(err) {
   if (err?.name === "InsecureContextError") return err.message;
   if (err?.name === "NotAllowedError") return "Camera/microphone permission denied.";
@@ -133,8 +175,11 @@ export function GroupCallProvider({ children }) {
     }
     // Ground-truth signal for the server's transcription job — see the
     // identical emit + comment in Callcontext.jsx's stopRecordingAndFlush.
-    if (currentRoomId && socket) {
-      socket.emit("recordingFlushed", { roomId: currentRoomId });
+    if (currentRoomId && socket && Number.isFinite(joinedAtRef.current)) {
+      socket.emit("recordingFlushed", {
+        roomId: currentRoomId,
+        joinedAt: joinedAtRef.current,
+      });
     }
   }, [socket]);
 
@@ -219,7 +264,13 @@ export function GroupCallProvider({ children }) {
     }
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: CALL_AUDIO_CONSTRAINTS,
-      video: wantVideo,
+      video: wantVideo
+        ? {
+            width: { ideal: 640, max: 1280 },
+            height: { ideal: 480, max: 720 },
+            frameRate: { ideal: 24, max: 30 },
+          }
+        : false,
     });
     localStreamRef.current = stream;
     setLocalStream(stream);
@@ -364,7 +415,7 @@ export function GroupCallProvider({ children }) {
         onChunk: (pcmArrayBuffer, sampleRate) => {
           if (!roomIdRef.current) return;
           const seq = chunkSeqRef.current++;
-          const uploadPromise = uploadCallAudioChunk(
+          const uploadPromise = uploadChunkWithRetry(
             roomIdRef.current,
             joinedAt,
             seq,
@@ -372,7 +423,10 @@ export function GroupCallProvider({ children }) {
             sampleRate
           )
             .catch((err) => {
-              console.error("uploadCallAudioChunk error:", err);
+              console.error(
+                `uploadCallAudioChunk error (seq=${seq}, all retries exhausted):`,
+                err
+              );
             })
             .finally(() => {
               pendingUploadsRef.current.delete(uploadPromise);

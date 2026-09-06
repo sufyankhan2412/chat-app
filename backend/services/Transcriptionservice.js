@@ -111,6 +111,12 @@ function isLikelyHallucination(text) {
   return HALLUCINATION_PATTERNS.some((re) => re.test(text));
 }
 
+// Tolerance window (ms) for matching an uploaded chunk-file's parsed
+// (userId, joinedAtMs) back to a Call.participants entry. See the
+// comment inline below (where this is used) for why exact millisecond
+// equality was too brittle to rely on.
+const JOIN_MATCH_TOLERANCE_MS = 2000;
+
 // ---------------------------------------------------------------------
 // Filenames look like "<userId>-<joinedAtMs>-<seq>.pcm" (written by
 // saveCallAudioChunk in middleware/upload.js) — one file PER uploaded
@@ -150,7 +156,7 @@ function parseAudioChunkFilename(filename) {
 function convertToWav(rawWavPath) {
   return new Promise((resolve, reject) => {
     const wavPath = rawWavPath.replace(/(\.wav)?$/i, ".filtered.wav");
-    
+
     // ENHANCED audio processing pipeline for better Whisper transcription:
     //
     // The filter chain is designed to maximize speech clarity for ASR
@@ -221,7 +227,7 @@ function convertToWav(rawWavPath) {
     //   - Noisy/quiet recordings confuse the model → hallucinations
     //   - This chain GUARANTEES clean, consistent levels
     //   - Each filter handles a different type of noise/distortion
-    
+
     execFile(
       ffmpegPath,
       [
@@ -245,13 +251,13 @@ function convertToWav(rawWavPath) {
           console.error(`[convertToWav] ffmpeg stderr:`, stderr);
           return reject(err);
         }
-        
+
         // Log loudnorm statistics if present in stderr
         const loudnormMatch = stderr.match(/Input Integrated:\s*(-?\d+\.?\d*)\s*LUFS.*Output Integrated:\s*(-?\d+\.?\d*)\s*LUFS/s);
         if (loudnormMatch) {
           console.log(`[convertToWav] Loudness normalization: ${loudnormMatch[1]} LUFS → ${loudnormMatch[2]} LUFS`);
         }
-        
+
         resolve(wavPath);
       }
     );
@@ -475,10 +481,56 @@ async function enqueueGroupCallTranscription(roomId, io) {
         chunkOrder,
       });
 
-      const entry = call.participants.find(
-        (p) => String(p.user?._id || p.user) === userId && p.joinedAt.getTime() === joinedAtMs
-      );
-      if (!entry) return []; // stray/unmatched session — ignore rather than guess
+      // Exact millisecond equality between the filename's joinedAtMs and
+      // Call.participants[].joinedAt used to be required here. That was
+      // brittle: any tiny drift (clock rounding on write vs. read, a
+      // retried "joinCallRoom" landing a slightly different timestamp,
+      // etc.) meant this ENTIRE session's audio was silently discarded —
+      // chunks present on disk, participant "covered" per the folder
+      // listing, yet nothing made it into the transcript, with no error
+      // anywhere. userId is authoritative (it's a Mongo ObjectId, exact
+      // match is correct and expected); joinedAtMs is best-effort
+      // correlation between a specific join and its audio, so it's
+      // matched within a tolerance window instead of requiring a perfect
+      // hit, and every non-exact match is logged loudly rather than
+      // silently accepted or silently dropped.
+      let entry = null;
+      let bestDiffMs = Infinity;
+      for (const p of call.participants) {
+        if (String(p.user?._id || p.user) !== userId) continue;
+        const diff = Math.abs(p.joinedAt.getTime() - joinedAtMs);
+        if (diff < bestDiffMs) {
+          bestDiffMs = diff;
+          entry = p;
+        }
+      }
+
+      if (!entry || bestDiffMs > JOIN_MATCH_TOLERANCE_MS) {
+        console.warn("[audio-session:unmatched]", {
+          recordingId: roomId,
+          session: key,
+          parsedUserId: userId,
+          parsedJoinedAtMs: joinedAtMs,
+          closestDiffMs: Number.isFinite(bestDiffMs) ? bestDiffMs : null,
+          dbParticipants: call.participants.map((p) => ({
+            userId: String(p.user?._id || p.user),
+            joinedAtMs: p.joinedAt?.getTime(),
+            hasJoinedAt: p.joinedAt instanceof Date,
+          })),
+          note:
+            "No participant entry matched within the tolerance window — this session's audio is being dropped from the transcript rather than guessed at.",
+        });
+        return []; // stray/unmatched session — ignore rather than guess
+      }
+
+      if (bestDiffMs > 0) {
+        console.warn("[audio-session:fuzzy-match]", {
+          recordingId: roomId,
+          session: key,
+          diffMs: bestDiffMs,
+          note: "Matched participant entry within tolerance rather than exact equality — investigate if this keeps happening for the same user/room.",
+        });
+      }
 
       coveredJoins.add(key);
       const speakerName = entry.user?.username || "Unknown";

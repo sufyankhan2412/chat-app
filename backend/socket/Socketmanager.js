@@ -52,18 +52,29 @@ const TRANSCRIPTION_STABLE_CHECKS_REQUIRED = 6; // ~18s of no new files before w
 const TRANSCRIPTION_MAX_WAIT_MS = 45000;
 
 // Ground truth, when we have it, beats the file-system quiet-time guess
-// above. Every client calls socket.emit("recordingFlushed", { roomId })
-// once its OWN stopRecordingAndFlush() has confirmed every one of its
-// chunks actually landed on the server (see Callcontext.jsx /
-// GroupCallContext.jsx). Once every participant who was ever in this
-// room has acked, we know for certain nothing more is coming and can
-// proceed immediately — no need to guess from a quiet gap on disk, which
-// is unreliable precisely because a NORMAL ~10s gap between scheduled
-// chunks (CALL_AUDIO_CHUNK_MS) looks identical to "recording actually
-// stopped" to that heuristic. The quiet-time poll below still runs as a
-// fallback for participants who never get the chance to ack cleanly
-// (crashed tab, killed connection, closed laptop lid) — same as before.
-const recordingFlushAcks = new Map(); // roomId -> Set<userId>
+// above. Every client calls socket.emit("recordingFlushed", { roomId,
+// joinedAt }) once its OWN stopRecordingAndFlush() has confirmed every
+// one of its chunks actually landed on the server (see Callcontext.jsx /
+// GroupCallContext.jsx). Once every join SESSION that was ever part of
+// this room has acked, we know for certain nothing more is coming and
+// can proceed immediately — no need to guess from a quiet gap on disk,
+// which is unreliable precisely because a NORMAL ~10s gap between
+// scheduled chunks (CALL_AUDIO_CHUNK_MS) looks identical to "recording
+// actually stopped" to that heuristic.
+//
+// IMPORTANT: keyed by "<userId>:<joinedAtMs>" — i.e. per JOIN SESSION,
+// not just per user. A room keyed only by userId would let a stale ack
+// from someone's FIRST join session (e.g. they left and rejoined the
+// same group call room) satisfy the "everyone acked" check for their
+// SECOND join session too, even though that second session's chunks
+// might still be uploading — letting transcription fire early and
+// truncate that person's rejoin audio. Keying by join session makes
+// each rejoin start with a clean slate of required acks.
+//
+// The quiet-time poll below still runs as a fallback for participants
+// who never get the chance to ack cleanly (crashed tab, killed
+// connection, closed laptop lid) — same as before.
+const recordingFlushAcks = new Map(); // roomId -> Set<"userId:joinedAtMs">
 
 // ---------------------------------------------------------------------
 // Disconnect grace period.
@@ -125,14 +136,16 @@ function snapshotAudioDir(roomId) {
     .join("|");
 }
 
-// `expectedUserIds` is every userId who ever joined this room (both sides
-// of a direct call, or every group-call participant) — passed in by each
-// call site below, which already has this list from the Call document or
-// the callLogMeta it's holding. Checked on every poll tick: as soon as
-// all of them have acked via "recordingFlushed", we resolve immediately
-// regardless of the file-system quiet-time state, since that's strictly
-// stronger evidence than an inferred quiet gap.
-function waitForAudioUploadsToSettle(roomId, expectedUserIds = []) {
+// `expectedSessions` is every "<userId>:<joinedAtMs>" join session that
+// was ever part of this room (both sides of a direct call, or every
+// group-call join/rejoin) — passed in by each call site below, which
+// already has this from the Call document's `participants` array (each
+// entry there IS one join session) or the callLogMeta it's holding.
+// Checked on every poll tick: as soon as all of them have acked via
+// "recordingFlushed", we resolve immediately regardless of the
+// file-system quiet-time state, since that's strictly stronger evidence
+// than an inferred quiet gap.
+function waitForAudioUploadsToSettle(roomId, expectedSessions = []) {
   return new Promise((resolve) => {
     const startedAt = Date.now();
     let lastSnapshot = null;
@@ -141,8 +154,8 @@ function waitForAudioUploadsToSettle(roomId, expectedUserIds = []) {
     const poll = () => {
       const acked = recordingFlushAcks.get(roomId);
       const allAcked =
-        expectedUserIds.length > 0 &&
-        expectedUserIds.every((id) => acked?.has(String(id)));
+        expectedSessions.length > 0 &&
+        expectedSessions.every((sessionKey) => acked?.has(sessionKey));
       if (allAcked) {
         return resolve();
       }
@@ -157,7 +170,13 @@ function waitForAudioUploadsToSettle(roomId, expectedUserIds = []) {
         lastSnapshot = snapshot;
       }
 
-      if (stableCount >= TRANSCRIPTION_STABLE_CHECKS_REQUIRED) {
+      // When the call record gives us the exact join sessions, a quiet
+      // directory is not proof that uploads are finished: the first chunk
+      // can still be in flight while the folder remains unchanged. Wait for
+      // the explicit per-session flush acknowledgements in that case. The
+      // quiet-time heuristic is only safe when there is no session metadata
+      // to wait for (for example, an older client or a crashed call).
+      if (expectedSessions.length === 0 && stableCount >= TRANSCRIPTION_STABLE_CHECKS_REQUIRED) {
         return resolve();
       }
       if (elapsed >= TRANSCRIPTION_MAX_WAIT_MS) {
@@ -173,8 +192,8 @@ function waitForAudioUploadsToSettle(roomId, expectedUserIds = []) {
   });
 }
 
-function scheduleTranscription(roomId, io, expectedUserIds = []) {
-  waitForAudioUploadsToSettle(roomId, expectedUserIds).then(() => {
+function scheduleTranscription(roomId, io, expectedSessions = []) {
+  waitForAudioUploadsToSettle(roomId, expectedSessions).then(() => {
     recordingFlushAcks.delete(roomId);
     enqueueGroupCallTranscription(roomId, io);
   });
@@ -360,7 +379,12 @@ function finalizeDirectCallRecording(io, meta) {
     }
   )
     .then(() => {
-      scheduleTranscription(roomId, io, [meta.callerId, meta.calleeId]);
+      // Both sides share the same joinedAt (recordingJoinedAtMs) for a
+      // direct call, so their session keys differ only by userId.
+      scheduleTranscription(roomId, io, [
+        `${meta.callerId}:${meta.recordingJoinedAtMs}`,
+        `${meta.calleeId}:${meta.recordingJoinedAtMs}`,
+      ]);
     })
     .catch((err) => console.error(`finalizeDirectCallRecording(${roomId}) error:`, err.message));
 }
@@ -567,12 +591,19 @@ try {
     // truth that lets the transcription job stop guessing from a
     // file-system quiet gap, which is fundamentally ambiguous while chunks
     // are still legitimately arriving every ~10s.
-    socket.on("recordingFlushed", ({ roomId }) => {
-      if (!roomId) return;
+    //
+    // `joinedAt` identifies WHICH join session is acking (a user can join
+    // the same room more than once across a call's lifetime) — see the
+    // comment on recordingFlushAcks above for why this must be tracked
+    // per-session rather than per-user. Older clients that don't send
+    // joinedAt are simply ignored here; the quiet-time poll in
+    // waitForAudioUploadsToSettle still covers them as a fallback.
+    socket.on("recordingFlushed", ({ roomId, joinedAt }) => {
+      if (!roomId || !Number.isFinite(joinedAt)) return;
       if (!recordingFlushAcks.has(roomId)) {
         recordingFlushAcks.set(roomId, new Set());
       }
-      recordingFlushAcks.get(roomId).add(userKey);
+      recordingFlushAcks.get(roomId).add(`${userKey}:${joinedAt}`);
     });
 
     // ---- WebRTC call signaling (1:1 audio/video calls) ----
@@ -1028,10 +1059,18 @@ try {
         }
 
         if (roomNowEmpty) {
+          // Every join session (userId + joinedAt) that was EVER part of
+          // this room — one per participants[] entry — is what
+          // waitForAudioUploadsToSettle needs, not just the set of
+          // userIds, since one user can appear more than once here
+          // (a leave + rejoin) and each occurrence has its own
+          // independent chunk upload to wait for.
           scheduleTranscription(
             roomId,
             io,
-            call.participants.map((p) => String(p.user?._id || p.user))
+            call.participants.map(
+              (p) => `${String(p.user?._id || p.user)}:${p.joinedAt.getTime()}`
+            )
           );
         }
 
@@ -1101,10 +1140,14 @@ try {
           }
 
           if (roomNowEmpty) {
+            // See the identical comment in removeParticipant above: one
+            // session key per participants[] entry, not per userId.
             scheduleTranscription(
               roomId,
               io,
-              call.participants.map((p) => String(p.user?._id || p.user))
+              call.participants.map(
+                (p) => `${String(p.user?._id || p.user)}:${p.joinedAt.getTime()}`
+              )
             );
           }
         }

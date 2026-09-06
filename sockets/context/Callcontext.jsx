@@ -38,6 +38,62 @@ const activeRecordingSessions = new Set();
 // ../utils/audioRecording.js, shared with GroupCallContext.jsx, so the
 // two call flows' capture settings can never drift apart.
 
+// ---------------------------------------------------------------------
+// Chunk-upload retry with backoff.
+//
+// WHY THIS EXISTS: a single chunk's upload can fail for reasons that
+// have nothing to do with our own audio pipeline — a dev tunnel briefly
+// dropping the connection (confirmed via console: a CORS preflight
+// failing because the underlying connection was gone, followed by a 408
+// Request Timeout), a mobile network handoff, a momentary Wi-Fi drop,
+// etc. Previously a failed upload was just logged and the chunk was
+// gone forever — for a participant on a flaky connection, this meant
+// most of their audio never reached the server at all, even though
+// recording itself (see pcmRecorder.js's own diagnostics) was capturing
+// it just fine. That's exactly what showed up as "the audio that came
+// back to the server is shorter than the real call, for one participant
+// specifically" — confirmed directly: session
+// 6a8d3708...e400 (Abdul Samad) only had chunk 0 land on the server
+// (expectedChunks:1, receivedChunks:1) out of a 44-second call, while
+// the browser console showed chunks 1/2/3 failing outright with a CORS/
+// timeout error on that same upload endpoint.
+//
+// This retries a failed chunk upload a few times with increasing delay
+// before giving up. Costs nothing when the network is healthy (first
+// attempt always succeeds, no extra latency), and recovers exactly the
+// transient-failure case above. It does NOT fix a genuinely dead
+// connection for the whole rest of the call — that's what the
+// backend's missingChunks/duplicateChunks logging and the transcript's
+// "no usable audio was captured for: X" note are for — but it stops a
+// single blip from taking a whole chunk down with it.
+const CHUNK_UPLOAD_MAX_RETRIES = 3;
+const CHUNK_UPLOAD_RETRY_DELAY_MS = 1000;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function uploadChunkWithRetry(...args) {
+  let lastErr;
+  for (let attempt = 0; attempt <= CHUNK_UPLOAD_MAX_RETRIES; attempt++) {
+    try {
+      return await uploadCallAudioChunk(...args);
+    } catch (err) {
+      lastErr = err;
+      if (attempt < CHUNK_UPLOAD_MAX_RETRIES) {
+        console.warn(
+          `[uploadCallAudioChunk] attempt ${attempt + 1} failed, retrying in ${
+            CHUNK_UPLOAD_RETRY_DELAY_MS * (attempt + 1)
+          }ms:`,
+          err.message
+        );
+        await sleep(CHUNK_UPLOAD_RETRY_DELAY_MS * (attempt + 1));
+      }
+    }
+  }
+  throw lastErr;
+}
+
 // idle -> outgoing (I called) | incoming (they called me)
 // outgoing -> ongoing (answered) | idle (rejected/cancelled/failed)
 // incoming -> ongoing (I answered) | idle (I declined/they cancelled)
@@ -146,8 +202,11 @@ export function CallProvider({ children }) {
     // identical to "recording actually stopped") and instead wait for
     // real confirmation from both sides of the call. See
     // Socketmanager.js's waitForAudioUploadsToSettle.
-    if (roomId && socket) {
-      socket.emit("recordingFlushed", { roomId });
+    if (roomId && socket && Number.isFinite(callJoinedAtRef.current)) {
+      socket.emit("recordingFlushed", {
+        roomId,
+        joinedAt: callJoinedAtRef.current,
+      });
     }
   }, [socket]);
 
@@ -240,7 +299,11 @@ export function CallProvider({ children }) {
           setCallError(
             "Call connection failed. If you're on different networks (e.g. one on mobile data), this app needs a TURN server configured to connect reliably."
           );
-          resetCallState();
+          // ICE failure can end the call through this handler instead of
+          // endCall(). Flush and acknowledge the recorder first so the
+          // server does not start transcription before the final PCM upload
+          // has arrived.
+          stopRecordingAndFlush().finally(() => resetCallState());
         }
         // "disconnected" is often transient (brief network hiccup) and
         // can recover on its own without intervention — intentionally
@@ -250,7 +313,7 @@ export function CallProvider({ children }) {
       pcRef.current = pc;
       return pc;
     },
-    [socket, resetCallState]
+    [socket, resetCallState, stopRecordingAndFlush]
   );
 
   // Records MY OWN mic audio (never the remote party's — that never
@@ -315,7 +378,7 @@ export function CallProvider({ children }) {
         onChunk: (pcmArrayBuffer, sampleRate) => {
           if (!callRoomIdRef.current) return;
           const seq = chunkSeqRef.current++;
-          const uploadPromise = uploadCallAudioChunk(
+          const uploadPromise = uploadChunkWithRetry(
             callRoomIdRef.current,
             joinedAt,
             seq,
@@ -323,7 +386,10 @@ export function CallProvider({ children }) {
             sampleRate
           )
             .catch((err) => {
-              console.error("uploadCallAudioChunk error:", err);
+              console.error(
+                `uploadCallAudioChunk error (seq=${seq}, all retries exhausted):`,
+                err
+              );
             })
             .finally(() => {
               pendingUploadsRef.current.delete(uploadPromise);
@@ -373,7 +439,14 @@ export function CallProvider({ children }) {
 
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: CALL_AUDIO_CONSTRAINTS,
-      video: type === "video",
+      video:
+        type === "video"
+          ? {
+              width: { ideal: 640, max: 1280 },
+              height: { ideal: 480, max: 720 },
+              frameRate: { ideal: 24, max: 30 },
+            }
+          : false,
     });
     localStreamRef.current = stream;
     setLocalStream(stream);

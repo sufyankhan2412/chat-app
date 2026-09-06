@@ -106,9 +106,43 @@ fs.mkdirSync(callAudioDir, { recursive: true });
 // avatar/attachment uploads do. This route is otherwise already scoped
 // (authenticated, call-specific) so accepting octet-stream here isn't
 // opening up a generic arbitrary-file-upload hole.
+//
+// IMPORTANT: this used to be a strict `file.mimetype !== "application/octet-stream"`
+// check with no logging on rejection. That's a plausible root cause for
+// "the server never receives ANY audio for a call" (as opposed to just
+// losing some chunks): if the Blob/FormData part built on the client
+// ever carries a mimetype other than exactly that literal string — e.g.
+// a browser appending a charset parameter, an intermediary rewriting
+// Content-Type, or a Blob constructed without an explicit `type` at all
+// (some browsers/paths report an empty string rather than
+// "application/octet-stream" in that case) — every single chunk for the
+// whole call would be rejected by multer's fileFilter, silently, with
+// nothing in the logs beyond a generic failed request. Retrying
+// (uploadChunkWithRetry on the client) does NOT help here, since a
+// fileFilter rejection is deterministic — it will fail exactly the same
+// way on every attempt, unlike a transient network drop.
+//
+// Now: only compares the base type (ignoring any ";charset=..." suffix),
+// tolerates a missing/empty mimetype, and — critically — logs full
+// details whenever an upload is actually rejected, so a real mismatch
+// shows up in server logs immediately instead of just manifesting as
+// "no audio ever arrived" with no further clue.
 const callAudioFileFilter = (req, file, cb) => {
-  if (file.mimetype !== "application/octet-stream") {
-    return cb(new Error("Only raw PCM audio uploads are allowed for call recordings"));
+  const rawMimetype = file.mimetype || "";
+  const baseType = rawMimetype.split(";")[0].trim().toLowerCase();
+
+  if (baseType && baseType !== "application/octet-stream") {
+    console.warn("[callAudio:reject]", {
+      roomId: req.body?.roomId,
+      userId: req.user?._id ? String(req.user._id) : undefined,
+      originalname: file.originalname,
+      rawMimetype,
+      note:
+        "Rejected a call-audio chunk upload because its mimetype wasn't application/octet-stream (or a recognizable variant of it). If this fires for every chunk of every call, the client's Blob is likely being constructed/sent without the expected type.",
+    });
+    return cb(
+      new Error(`Only raw PCM audio uploads are allowed for call recordings (got "${rawMimetype}")`)
+    );
   }
   cb(null, true);
 };
@@ -157,15 +191,15 @@ function saveCallAudioChunk(roomId, userId, joinedAtMs, seq, buffer, sampleRate)
   fs.mkdirSync(dir, { recursive: true });
   const seqPadded = String(seq).padStart(6, "0");
   const filePath = path.join(dir, `${userId}-${joinedAtMs}-${seqPadded}.pcm`);
-  
+
   // Diagnostic: verify what we're actually writing to disk
   console.log(`[audio-chunk:save] roomId=${roomId}, seq=${seq}, buffer.length=${buffer.length}, sampleRate=${sampleRate}`);
-  
+
   // writeFileSync (not append): each chunk is its own file, and this
   // also makes a client retry of the same chunk idempotent instead of
   // duplicating bytes.
   fs.writeFileSync(filePath, buffer);
-  
+
   // Verify the file was written correctly
   const stat = require('fs').statSync(filePath);
   console.log(`[audio-chunk:saved] filePath=${path.basename(filePath)}, diskSize=${stat.size}`);
