@@ -51,6 +51,9 @@ class PcmCaptureProcessor extends AudioWorkletProcessor {
     super();
     this.buffer = new Float32Array(4096);
     this.writeIndex = 0;
+    this.port.onmessage = (event) => {
+      if (event.data?.type === "flush") this.flush();
+    };
   }
 
   process(inputs) {
@@ -71,6 +74,16 @@ class PcmCaptureProcessor extends AudioWorkletProcessor {
     }
     return true;
   }
+
+  flush() {
+    if (this.writeIndex > 0) {
+      const partial = this.buffer.slice(0, this.writeIndex);
+      this.port.postMessage(partial, [partial.buffer]);
+      this.buffer = new Float32Array(4096);
+      this.writeIndex = 0;
+    }
+    this.port.postMessage({ type: "flushed" });
+  }
 }
 registerProcessor("pcm-capture-processor", PcmCaptureProcessor);
 `;
@@ -90,11 +103,13 @@ export function createPcmChunkRecorder({ stream, chunkMs, onChunk }) {
   const sampleRate = audioContext.sampleRate;
   const sourceNode = audioContext.createMediaStreamSource(stream);
   let processorNode = null;
+  let usesWorklet = false;
   let flushTimer = null;
   let suspendWatchdog = null;
   let stopped = false;
   let floatBuffers = [];
   let bufferedFrames = 0;
+  let flushWaiters = [];
 
   function emitChunk() {
     if (!bufferedFrames) return;
@@ -113,6 +128,13 @@ export function createPcmChunkRecorder({ stream, chunkMs, onChunk }) {
     const copy = samples.slice();
     floatBuffers.push(copy);
     bufferedFrames += copy.length;
+  }
+
+  function handleWorkletMessage(event) {
+    if (event.data?.type !== "flushed") return;
+    const waiters = flushWaiters;
+    flushWaiters = [];
+    waiters.forEach((resolve) => resolve());
   }
 
   async function start() {
@@ -143,7 +165,9 @@ export function createPcmChunkRecorder({ stream, chunkMs, onChunk }) {
         URL.revokeObjectURL(blobUrl);
       }
       processorNode = new AudioWorkletNode(audioContext, "pcm-capture-processor");
+      usesWorklet = true;
       processorNode.port.onmessage = (event) => handleSamples(event.data);
+      processorNode.port.addEventListener("message", handleWorkletMessage);
       sourceNode.connect(processorNode);
     } catch (error) {
       console.warn("createPcmChunkRecorder: AudioWorklet unavailable, using fallback", error);
@@ -162,7 +186,17 @@ export function createPcmChunkRecorder({ stream, chunkMs, onChunk }) {
   }
 
   function flush() {
-    emitChunk();
+    if (!usesWorklet || !processorNode?.port) {
+      emitChunk();
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      flushWaiters.push(() => {
+        emitChunk();
+        resolve();
+      });
+      processorNode.port.postMessage({ type: "flush" });
+    });
   }
 
   function stop() {
@@ -170,8 +204,9 @@ export function createPcmChunkRecorder({ stream, chunkMs, onChunk }) {
     stopped = true;
     if (flushTimer) clearInterval(flushTimer);
     if (suspendWatchdog) clearInterval(suspendWatchdog);
-    flush();
+    emitChunk();
     sourceNode.disconnect();
+    processorNode?.port.removeEventListener("message", handleWorkletMessage);
     processorNode?.disconnect();
     audioContext.close().catch(() => {});
   }

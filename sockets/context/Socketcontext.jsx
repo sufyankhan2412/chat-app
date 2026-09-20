@@ -5,7 +5,9 @@ const SocketContext = createContext();
 
 export const useSocket = () => useContext(SocketContext);
 
-const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || "http://localhost:3000";
+const SOCKET_URL = window.location.hostname.endsWith(".devtunnels.ms")
+  ? import.meta.env.VITE_TUNNEL_SOCKET_URL
+  : import.meta.env.VITE_SOCKET_URL || "http://localhost:5000";
 
 export const SocketProvider = ({ children, token, user }) => {
   const socketRef = useRef(null);

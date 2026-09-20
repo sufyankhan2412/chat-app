@@ -26,11 +26,17 @@
 
 export function attachStreamAndPlay(element, stream) {
   if (!element) return;
+  if (element._callPlaybackCleanup) {
+    element._callPlaybackCleanup();
+    element._callPlaybackCleanup = null;
+  }
   element.srcObject = stream || null;
   if (!stream) return;
-  const playResult = element.play();
-  if (playResult && typeof playResult.catch === "function") {
-    playResult.catch((err) => {
+
+  const tryPlay = () => {
+    const playResult = element.play();
+    if (playResult && typeof playResult.catch === "function") {
+      playResult.catch((err) => {
       // AbortError: srcObject got reassigned again before this play()
       // resolved — harmless, the newer assignment's own play() call is
       // the one that matters.
@@ -43,8 +49,20 @@ export function attachStreamAndPlay(element, stream) {
           err?.name || err
         );
       }
-    });
-  }
+      });
+    }
+  };
+
+  // WebRTC streams can be assigned before the media element has received
+  // playable data. Retrying at these readiness points prevents a later UI
+  // action such as mute from being the accidental thing that starts audio.
+  element.addEventListener("loadedmetadata", tryPlay);
+  element.addEventListener("canplay", tryPlay);
+  element._callPlaybackCleanup = () => {
+    element.removeEventListener("loadedmetadata", tryPlay);
+    element.removeEventListener("canplay", tryPlay);
+  };
+  tryPlay();
 }
 
 let unlockRegistered = false;

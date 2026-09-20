@@ -105,6 +105,7 @@ export default function CallModal() {
     isCameraOff,
     callError,
     callStartedAt,
+    isReconnecting,
     acceptCall,
     rejectCall,
     endCall,
@@ -273,11 +274,23 @@ export default function CallModal() {
 
       <div className="call-info-bar">
         <span className="call-contact-name">{name}</span>
-        <span className="call-status-text">
+        <span
+          className={`call-status-text ${
+            callState === CALL_STATE.ONGOING && isReconnecting ? "call-status-reconnecting" : ""
+          }`}
+        >
           {callState === CALL_STATE.OUTGOING && "Calling…"}
           {callState === CALL_STATE.INCOMING &&
             `Incoming ${isVideo ? "video" : "voice"} call…`}
-          {callState === CALL_STATE.ONGOING && formatDuration(elapsed)}
+          {callState === CALL_STATE.ONGOING &&
+            (isReconnecting ? (
+              <>
+                <span className="call-status-dot" />
+                Reconnecting…
+              </>
+            ) : (
+              formatDuration(elapsed)
+            ))}
         </span>
         {callState === CALL_STATE.ONGOING && callError && (
           <span className="call-inline-error">{callError}</span>

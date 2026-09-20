@@ -3097,6 +3097,30 @@ button.profile-row-danger:disabled {
   letter-spacing: 0.02em;
 }
 
+/* WhatsApp-style "Reconnecting…" indicator — shown in place of the call
+   timer while the peer connection is in the "disconnected" state, i.e.
+   media stopped flowing but the call itself is still considered up (see
+   Callcontext.jsx's isReconnecting). */
+.call-status-reconnecting {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #ffd479;
+}
+
+.call-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #ffd479;
+  animation: call-status-dot-pulse 1s ease-in-out infinite;
+}
+
+@keyframes call-status-dot-pulse {
+  0%, 100% { opacity: 0.35; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1); }
+}
+
 /* ---- Controls ---- */
 .call-controls {
   position: relative;
@@ -4204,6 +4228,32 @@ button.profile-row-danger:disabled {
 
 .gc-hidden {
   display: none;
+}
+
+/* WhatsApp-style per-participant "Reconnecting…" badge — see
+   GroupCallContext.jsx's onconnectionstatechange / gc-tile-reconnecting
+   on the peers map. Sits over whatever the tile already shows (frozen
+   video frame or avatar) rather than replacing it. */
+.gc-tile-reconnecting {
+  outline: 2px solid #ffd479;
+  outline-offset: -2px;
+}
+
+.gc-tile-reconnecting-badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #ffd479;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
 }
 
 .gc-tile-placeholder {

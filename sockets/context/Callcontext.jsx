@@ -9,7 +9,7 @@ import React, {
 import { useSocket } from "./Socketcontext";
 import { useAuth } from "./Authcontext";
 import { getUserProfile, uploadCallAudioChunk } from "../api";
-import { CALL_AUDIO_CHUNK_MS, CALL_AUDIO_CONSTRAINTS } from "../utils/audioRecording";
+import { CALL_AUDIO_CHUNK_MS, getCallAudioConstraints } from "../utils/audioRecording";
 import { createPcmChunkRecorder } from "../utils/pcmRecorder";
 import { ICE_SERVERS } from "../utils/iceServers";
 
@@ -69,6 +69,14 @@ const activeRecordingSessions = new Set();
 const CHUNK_UPLOAD_MAX_RETRIES = 3;
 const CHUNK_UPLOAD_RETRY_DELAY_MS = 1000;
 
+// How long to stay in "Reconnecting…" state after the peer connection
+// drops to "disconnected" before giving up and ending the call for both
+// sides. 30s mirrors the kind of grace window apps like WhatsApp give a
+// call before dropping it — long enough to ride out a real network blip
+// (Wi-Fi/mobile handoff, a brief dead zone, the OS suspending the tab for
+// a few seconds) without either side having to manually redial.
+const RECONNECT_GRACE_MS = 30000;
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -125,6 +133,16 @@ export function CallProvider({ children }) {
   const [isCameraOff, setIsCameraOff] = useState(false);
   const [callError, setCallError] = useState("");
   const [callStartedAt, setCallStartedAt] = useState(null);
+  // True while the peer connection is in WebRTC's "disconnected" state —
+  // i.e. media was flowing and then stopped, most commonly because one
+  // side's network briefly dropped (Wi-Fi handoff, a few seconds of no
+  // signal, a switch between Wi-Fi and mobile data, etc). This is NOT the
+  // same as the call actually ending: like WhatsApp, we keep the call
+  // "up" (peer connection stays open, UI stays on the call screen) and
+  // just show a "Reconnecting…" state, giving the network a chance to
+  // come back on its own before giving up. See createPeerConnection's
+  // onconnectionstatechange below for the state machine.
+  const [isReconnecting, setIsReconnecting] = useState(false);
   // Set once the other side (or I) successfully turn this 1:1 call into a
   // link-based group call — { roomId, callType, link }. CallModal watches
   // this to hand off into GroupCallContext automatically, for both people,
@@ -133,6 +151,19 @@ export function CallProvider({ children }) {
   const [addingPeople, setAddingPeople] = useState(false);
 
   const pcRef = useRef(null);
+  // Timer used while isReconnecting is true — see createPeerConnection's
+  // onconnectionstatechange. Cleared the instant the connection recovers
+  // OR the call ends any other way, so a stale timer from a PREVIOUS call
+  // can never fire and tear down a brand-new one.
+  const reconnectTimerRef = useRef(null);
+  // Always points at the LATEST endCall closure. Needed because
+  // createPeerConnection (which needs to be able to trigger a hangup from
+  // inside the connectionstatechange handler) is created before endCall
+  // is defined further down, and endCall's own dependencies (callState,
+  // remoteUser) change over the life of a call — a stale closure captured
+  // once at pc-creation time would keep emitting to whatever remoteUser
+  // was set when the PEER CONNECTION was created, not the current one.
+  const endCallRef = useRef(null);
   const localStreamRef = useRef(null);
   const pendingOfferRef = useRef(null); // { from, offer, callType } while ringing
   const pendingCandidatesRef = useRef([]); // ICE candidates that arrive before remote description is set
@@ -182,7 +213,7 @@ export function CallProvider({ children }) {
     const recorder = recorderRef.current;
     if (!recorder) return;
     const roomId = callRoomIdRef.current;
-    recorder.flush(); // synchronously triggers onChunk -> uploadCallAudioChunk for anything buffered
+    await recorder.flush(); // includes the AudioWorklet's partial final buffer
     recorder.stop();
     recorderRef.current = null;
     if (pendingUploadsRef.current.size) {
@@ -211,6 +242,15 @@ export function CallProvider({ children }) {
   }, [socket]);
 
   const resetCallState = useCallback(() => {
+    // Whatever's ending the call (clean hangup, ICE failure, the OTHER
+    // side hanging up, etc.) makes any pending "give up on reconnecting"
+    // timer moot — clear it so it can never fire against a call that's
+    // already over.
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    setIsReconnecting(false);
     if (pcRef.current) {
       pcRef.current.onicecandidate = null;
       pcRef.current.ontrack = null;
@@ -276,38 +316,96 @@ export function CallProvider({ children }) {
         setRemoteStream(event.streams[0]);
       };
 
-      // Previously a no-op: "failed"/"disconnected"/"closed" were all
-      // caught but nothing was done with them, so a call that couldn't
-      // establish a working media path (most commonly: two peers on
-      // different networks — e.g. one on mobile data — with no TURN
-      // relay configured, see ICE_SERVERS above) looked "connected" in
-      // our own UI state forever, with silent/missing audio and no
-      // indication of why. "failed" specifically means the ICE agent
-      // exhausted every candidate pair and could not find one that
-      // works — per the WebRTC spec this is terminal and will not
-      // self-recover, unlike "disconnected" (often a brief network
-      // blip that reconnects on its own), so only "failed" surfaces an
-      // error and ends the call here.
+      // WhatsApp-style reconnect handling.
+      //
+      // "disconnected" means media stopped flowing but the ICE agent
+      // hasn't given up — this is the common, usually-transient case: a
+      // few seconds of no signal, a Wi-Fi/mobile-data handoff, the phone
+      // being locked, etc. Per the WebRTC spec it can self-recover back
+      // to "connected" with NO action needed on our part. So instead of
+      // ending the call here, we just surface a "Reconnecting…" state in
+      // the UI (see isReconnecting) and start a grace-period timer. If
+      // the connection comes back before the timer fires, the call
+      // carries on exactly as it was — same peer connection, same
+      // recording session, nothing was torn down. Only if the network
+      // genuinely never comes back within that window do we give up.
+      //
+      // "failed" means the ICE agent has already exhausted every
+      // candidate pair and given up — per spec this is terminal and will
+      // not self-recover on its own (classic cause: two peers on
+      // different networks, e.g. one on mobile data/CGNAT, with no TURN
+      // relay configured — see ICE_SERVERS above), so there's no reason
+      // to wait out a grace period for it.
+      //
+      // IMPORTANT (bug fix): both cases below now end the call by calling
+      // endCall() (via endCallRef, see its comment above) rather than
+      // just resetting THIS side's local state. Resetting only locally
+      // used to leave the call fully "ongoing" on the other participant's
+      // screen forever — a frozen video/silent audio with no way to know
+      // the call was actually over on their end. endCall() emits the
+      // proper "endCall"/"cancelCall" socket event, so the other side's
+      // "callEnded" listener fires too and the call ends on BOTH sides,
+      // the same way an explicit hangup does.
       pc.onconnectionstatechange = () => {
-        if (pc.connectionState === "failed") {
+        const state = pc.connectionState;
+
+        if (state === "connected") {
+          // Recovered (either connecting for the first time, or coming
+          // back from "disconnected") — clear any pending give-up timer.
+          if (reconnectTimerRef.current) {
+            clearTimeout(reconnectTimerRef.current);
+            reconnectTimerRef.current = null;
+          }
+          setIsReconnecting(false);
+          return;
+        }
+
+        if (state === "disconnected") {
+          setIsReconnecting(true);
+          // Best-effort nudge: ask the ICE agent to gather a fresh set of
+          // candidates in case the old path is truly gone (e.g. we
+          // switched networks) rather than just briefly interrupted.
+          // Safe no-op if the browser doesn't support it or the
+          // connection recovers on its own before this matters.
+          void (async () => {
+            try {
+              const offer = await pc.createOffer({ iceRestart: true });
+              await pc.setLocalDescription(offer);
+              socket?.emit("renegotiateOffer", { targetId, offer });
+            } catch (err) {
+              console.warn("[Call] ICE restart renegotiation failed:", err);
+            }
+          })();
+          if (!reconnectTimerRef.current) {
+            reconnectTimerRef.current = setTimeout(() => {
+              reconnectTimerRef.current = null;
+              console.warn(
+                `[Call] connection stayed disconnected for ${RECONNECT_GRACE_MS}ms — giving up and ending the call for both sides.`
+              );
+              setCallError("Call ended — the connection couldn't be recovered.");
+              endCallRef.current?.();
+            }, RECONNECT_GRACE_MS);
+          }
+          return;
+        }
+
+        if (state === "failed") {
           console.error(
             "[Call] RTCPeerConnection connectionState=failed — ICE could not find a usable path. " +
               "This is the classic symptom of two peers on different networks (e.g. one on mobile " +
               "data/CGNAT) with no TURN server configured. Set VITE_TURN_URL/VITE_TURN_USERNAME/" +
               "VITE_TURN_CREDENTIAL."
           );
+          if (reconnectTimerRef.current) {
+            clearTimeout(reconnectTimerRef.current);
+            reconnectTimerRef.current = null;
+          }
+          setIsReconnecting(false);
           setCallError(
             "Call connection failed. If you're on different networks (e.g. one on mobile data), this app needs a TURN server configured to connect reliably."
           );
-          // ICE failure can end the call through this handler instead of
-          // endCall(). Flush and acknowledge the recorder first so the
-          // server does not start transcription before the final PCM upload
-          // has arrived.
-          stopRecordingAndFlush().finally(() => resetCallState());
+          endCallRef.current?.();
         }
-        // "disconnected" is often transient (brief network hiccup) and
-        // can recover on its own without intervention — intentionally
-        // not treated as fatal here, only "failed" is.
       };
 
       pcRef.current = pc;
@@ -438,7 +536,7 @@ export function CallProvider({ children }) {
     }
 
     const stream = await navigator.mediaDevices.getUserMedia({
-      audio: CALL_AUDIO_CONSTRAINTS,
+      audio: getCallAudioConstraints(),
       video:
         type === "video"
           ? {
@@ -558,6 +656,13 @@ export function CallProvider({ children }) {
     resetCallState();
   }, [socket, callState, remoteUser, resetCallState, stopRecordingAndFlush]);
 
+  // Keep endCallRef pointed at the latest endCall closure — see the ref's
+  // declaration above for why createPeerConnection needs to reach endCall
+  // indirectly like this instead of depending on it directly.
+  useEffect(() => {
+    endCallRef.current = endCall;
+  }, [endCall]);
+
   const toggleMute = useCallback(() => {
     if (!localStreamRef.current) return;
     const nextMuted = !isMuted;
@@ -635,6 +740,29 @@ export function CallProvider({ children }) {
         setCallStartedAt(Date.now());
       } catch (err) {
         console.error("setRemoteDescription (answer) error:", err);
+      }
+    };
+
+    const onRenegotiateOffer = async ({ from, offer }) => {
+      const pc = pcRef.current;
+      if (!pc || !offer) return;
+      try {
+        await pc.setRemoteDescription(new RTCSessionDescription(offer));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        socket.emit("renegotiateAnswer", { targetId: from, answer });
+      } catch (err) {
+        console.error("renegotiate offer error:", err);
+      }
+    };
+
+    const onRenegotiateAnswer = async ({ answer }) => {
+      const pc = pcRef.current;
+      if (!pc || !answer) return;
+      try {
+        await pc.setRemoteDescription(new RTCSessionDescription(answer));
+      } catch (err) {
+        console.error("renegotiate answer error:", err);
       }
     };
 
@@ -721,6 +849,8 @@ export function CallProvider({ children }) {
 
     socket.on("incomingCall", onIncomingCall);
     socket.on("callAnswered", onCallAnswered);
+    socket.on("renegotiateOffer", onRenegotiateOffer);
+    socket.on("renegotiateAnswer", onRenegotiateAnswer);
     socket.on("iceCandidate", onIceCandidate);
     socket.on("callRejected", onCallRejected);
     socket.on("callCancelled", onCallCancelled);
@@ -733,6 +863,8 @@ export function CallProvider({ children }) {
     return () => {
       socket.off("incomingCall", onIncomingCall);
       socket.off("callAnswered", onCallAnswered);
+      socket.off("renegotiateOffer", onRenegotiateOffer);
+      socket.off("renegotiateAnswer", onRenegotiateAnswer);
       socket.off("iceCandidate", onIceCandidate);
       socket.off("callRejected", onCallRejected);
       socket.off("callCancelled", onCallCancelled);
@@ -769,6 +901,7 @@ export function CallProvider({ children }) {
     isCameraOff,
     callError,
     callStartedAt,
+    isReconnecting,
     currentUserId: user?._id,
     startCall,
     acceptCall,

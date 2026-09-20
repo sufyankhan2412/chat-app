@@ -14,3 +14,14 @@ export const CALL_AUDIO_CONSTRAINTS = {
   sampleRate: 48000,
   sampleSize: 16,
 };
+
+export function getCallAudioConstraints() {
+  const supported = navigator.mediaDevices?.getSupportedConstraints?.() || {};
+  const constraints = { ...CALL_AUDIO_CONSTRAINTS };
+
+  // voiceIsolation is an optional browser/device DSP mode. Use it only when
+  // the browser advertises support so older browsers keep the normal AEC path.
+  if (supported.voiceIsolation) constraints.voiceIsolation = { ideal: true };
+  if (supported.latency) constraints.latency = { ideal: 0.01, max: 0.03 };
+  return constraints;
+}

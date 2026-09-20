@@ -9,7 +9,7 @@ import React, {
 import { useSocket } from "./Socketcontext";
 import { useAuth } from "./Authcontext";
 import { createCallLink, getGroupCallChatHistory, uploadCallAudioChunk } from "../api";
-import { CALL_AUDIO_CHUNK_MS, CALL_AUDIO_CONSTRAINTS } from "../utils/audioRecording";
+import { CALL_AUDIO_CHUNK_MS, getCallAudioConstraints } from "../utils/audioRecording";
 import { createPcmChunkRecorder } from "../utils/pcmRecorder";
 import { ICE_SERVERS } from "../utils/iceServers";
 
@@ -25,6 +25,14 @@ const activeRecordingSessions = new Set();
 // CALL_AUDIO_CHUNK_MS and CALL_AUDIO_CONSTRAINTS live in
 // ../utils/audioRecording.js, shared with Callcontext.jsx, so the two
 // call flows' capture settings can never drift apart.
+
+// Same WhatsApp-style grace window as Callcontext.jsx's RECONNECT_GRACE_MS
+// — how long a per-peer mesh link is allowed to sit "disconnected" (shown
+// as "Reconnecting…" on that participant's tile) before this client gives
+// up on it and removes that one participant's tile. Scoped per peer, not
+// per call: one participant's flaky network never affects anyone else's
+// connection in the same meeting.
+const PEER_RECONNECT_GRACE_MS = 30000;
 
 // ---------------------------------------------------------------------
 // Chunk-upload retry with backoff. Identical mechanism/reasoning to the
@@ -116,6 +124,14 @@ export function GroupCallProvider({ children }) {
   const modeRef = useRef("video");
   // Map<userId, RTCPeerConnection>
   const pcsRef = useRef(new Map());
+  const pendingIceCandidatesRef = useRef(new Map());
+  // Map<userId, Timeout> — one pending "give up on this peer" timer per
+  // participant currently in the "disconnected" state. See
+  // getOrCreatePeerConnection's onconnectionstatechange for the full
+  // reasoning (same WhatsApp-style grace-period approach as Callcontext.jsx,
+  // just scoped per-peer since a mesh call's link to ONE participant can
+  // drop without the meeting itself ending for anyone else).
+  const peerReconnectTimersRef = useRef(new Map());
   // My own mic-only recorder for this join session — see
   // startRecording below. Calls are mesh WebRTC, so this is the only way
   // any audio ever reaches the server for transcription purposes; it's
@@ -159,7 +175,7 @@ export function GroupCallProvider({ children }) {
     const recorder = recorderRef.current;
     if (!recorder) return;
     const currentRoomId = roomIdRef.current;
-    recorder.flush();
+    await recorder.flush();
     recorder.stop();
     recorderRef.current = null;
     if (pendingUploadsRef.current.size) {
@@ -184,6 +200,11 @@ export function GroupCallProvider({ children }) {
   }, [socket]);
 
   const cleanupPeer = useCallback((peerId) => {
+    const pendingTimer = peerReconnectTimersRef.current.get(peerId);
+    if (pendingTimer) {
+      clearTimeout(pendingTimer);
+      peerReconnectTimersRef.current.delete(peerId);
+    }
     const pc = pcsRef.current.get(peerId);
     if (pc) {
       pc.onicecandidate = null;
@@ -192,6 +213,7 @@ export function GroupCallProvider({ children }) {
       pc.close();
       pcsRef.current.delete(peerId);
     }
+    pendingIceCandidatesRef.current.delete(peerId);
     setPeers((prev) => {
       const next = new Map(prev);
       next.delete(peerId);
@@ -200,6 +222,8 @@ export function GroupCallProvider({ children }) {
   }, []);
 
   const resetAll = useCallback(() => {
+    peerReconnectTimersRef.current.forEach((timer) => clearTimeout(timer));
+    peerReconnectTimersRef.current = new Map();
     pcsRef.current.forEach((pc) => {
       pc.onicecandidate = null;
       pc.ontrack = null;
@@ -207,6 +231,7 @@ export function GroupCallProvider({ children }) {
       pc.close();
     });
     pcsRef.current = new Map();
+    pendingIceCandidatesRef.current = new Map();
     // Best-effort synchronous stop for cleanup paths that can't await
     // (e.g. a React effect's cleanup function). Explicit leaves should
     // call stopRecordingAndFlush() themselves BEFORE calling resetAll —
@@ -263,7 +288,7 @@ export function GroupCallProvider({ children }) {
       throw err;
     }
     const stream = await navigator.mediaDevices.getUserMedia({
-      audio: CALL_AUDIO_CONSTRAINTS,
+      audio: getCallAudioConstraints(),
       video: wantVideo
         ? {
             width: { ideal: 640, max: 1280 },
@@ -292,6 +317,7 @@ export function GroupCallProvider({ children }) {
       if (pcsRef.current.has(peerId)) return pcsRef.current.get(peerId);
 
       const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+      pendingIceCandidatesRef.current.set(peerId, []);
 
       pc.onicecandidate = (event) => {
         if (event.candidate && socket && roomIdRef.current) {
@@ -314,19 +340,80 @@ export function GroupCallProvider({ children }) {
       };
 
       // Mesh calls create one independent RTCPeerConnection per remote
-      // participant, so a path that fails to ONE peer (e.g. they're on a
-      // different network with no reachable candidate pair — the classic
-      // case being a phone on mobile-carrier NAT with no TURN server
-      // configured, see ICE_SERVERS above) must be handled per-peer: it
-      // shouldn't silently sit "connected" in our state with no stream
-      // ever arriving, and it must not be allowed to affect any of the
-      // OTHER peer connections in the same room, which may be working
-      // fine. Previously there was no handler here at all, so a failed
-      // mesh link to one participant was completely invisible — that
-      // participant's tile would just stay on the placeholder avatar
-      // forever with nothing telling you why.
+      // participant, so a path that has trouble reaching ONE peer (e.g.
+      // they're on a different network with no reachable candidate pair —
+      // the classic case being a phone on mobile-carrier NAT with no TURN
+      // server configured, see ICE_SERVERS above) must be handled
+      // per-peer: it shouldn't silently sit "connected" in our state with
+      // no stream ever arriving, and it must not be allowed to affect any
+      // of the OTHER peer connections in the same room, which may be
+      // working fine.
+      //
+      // WhatsApp-style reconnect handling, same approach as
+      // Callcontext.jsx's 1:1 calls (see that file's comment for the full
+      // reasoning): "disconnected" is usually a transient network blip on
+      // one participant's end and can self-recover, so it's surfaced as a
+      // "Reconnecting…" state on just THAT participant's tile (via
+      // peers.get(peerId).reconnecting) rather than immediately dropping
+      // them from the call. A grace-period timer gives it
+      // PEER_RECONNECT_GRACE_MS to come back before this client gives up
+      // and removes that one tile. "failed" is terminal per the WebRTC
+      // spec (the ICE agent has already exhausted every candidate pair)
+      // so it skips the grace period and cleans up immediately.
       pc.onconnectionstatechange = () => {
-        if (pc.connectionState === "failed") {
+        const state = pc.connectionState;
+
+        if (state === "connected") {
+          const pendingTimer = peerReconnectTimersRef.current.get(peerId);
+          if (pendingTimer) {
+            clearTimeout(pendingTimer);
+            peerReconnectTimersRef.current.delete(peerId);
+          }
+          setPeers((prev) => {
+            if (!prev.get(peerId)?.reconnecting) return prev;
+            const next = new Map(prev);
+            next.set(peerId, { ...next.get(peerId), reconnecting: false });
+            return next;
+          });
+          return;
+        }
+
+        if (state === "disconnected") {
+          setPeers((prev) => {
+            const existing = prev.get(peerId);
+            if (!existing || existing.reconnecting) return prev;
+            const next = new Map(prev);
+            next.set(peerId, { ...existing, reconnecting: true });
+            return next;
+          });
+          void (async () => {
+            try {
+              const offer = await pc.createOffer({ iceRestart: true });
+              await pc.setLocalDescription(offer);
+              socket?.emit("callSignal", {
+                roomId: roomIdRef.current,
+                targetUserId: peerId,
+                signalType: "offer",
+                payload: offer,
+              });
+            } catch (err) {
+              console.warn(`[GroupCall] ICE restart renegotiation failed for peer ${peerId}:`, err);
+            }
+          })();
+          if (!peerReconnectTimersRef.current.has(peerId)) {
+            const timer = setTimeout(() => {
+              peerReconnectTimersRef.current.delete(peerId);
+              console.warn(
+                `[GroupCall] connection to peer ${peerId} stayed disconnected for ${PEER_RECONNECT_GRACE_MS}ms — removing their tile.`
+              );
+              cleanupPeer(peerId);
+            }, PEER_RECONNECT_GRACE_MS);
+            peerReconnectTimersRef.current.set(peerId, timer);
+          }
+          return;
+        }
+
+        if (state === "failed") {
           console.error(
             `[GroupCall] connection to peer ${peerId} failed — ICE could not find a usable path. ` +
               "Likely cause: that participant is on a different/restrictive network (e.g. mobile " +
@@ -337,8 +424,6 @@ export function GroupCallProvider({ children }) {
           );
           cleanupPeer(peerId);
         }
-        // "disconnected" can be a transient blip that recovers on its
-        // own — only "failed" is treated as terminal per the WebRTC spec.
       };
 
       if (localStreamRef.current) {
@@ -689,6 +774,11 @@ export function GroupCallProvider({ children }) {
       try {
         if (signalType === "offer") {
           await pc.setRemoteDescription(new RTCSessionDescription(payload));
+          const pendingCandidates = pendingIceCandidatesRef.current.get(fromUserId) || [];
+          pendingIceCandidatesRef.current.set(fromUserId, []);
+          for (const candidate of pendingCandidates) {
+            await pc.addIceCandidate(new RTCIceCandidate(candidate));
+          }
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
           socket.emit("callSignal", {
@@ -699,15 +789,19 @@ export function GroupCallProvider({ children }) {
           });
         } else if (signalType === "answer") {
           await pc.setRemoteDescription(new RTCSessionDescription(payload));
+          const pendingCandidates = pendingIceCandidatesRef.current.get(fromUserId) || [];
+          pendingIceCandidatesRef.current.set(fromUserId, []);
+          for (const candidate of pendingCandidates) {
+            await pc.addIceCandidate(new RTCIceCandidate(candidate));
+          }
         } else if (signalType === "ice") {
           if (pc.remoteDescription) {
             await pc.addIceCandidate(new RTCIceCandidate(payload));
+          } else {
+            const pendingCandidates = pendingIceCandidatesRef.current.get(fromUserId) || [];
+            pendingCandidates.push(payload);
+            pendingIceCandidatesRef.current.set(fromUserId, pendingCandidates);
           }
-          // Candidates that arrive before the remote description (rare with
-          // this offer/answer ordering, but possible under jitter) are
-          // simply dropped — WebRTC will still connect via later
-          // candidates in practice; a full queue mirrors Callcontext.jsx
-          // if this ever needs hardening further.
         }
       } catch (err) {
         console.error(`callSignal (${signalType}) error:`, err);
