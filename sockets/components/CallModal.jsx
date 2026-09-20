@@ -84,6 +84,28 @@ function AddPersonIcon(props) {
   );
 }
 
+// Speaker icon - for earpiece mode (speaker OFF)
+function SpeakerOffIcon(props) {
+  return (
+    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+      <path d="M11 5L6 9H2v6h4l5 4V5z" />
+      <line x1="23" y1="9" x2="17" y2="15" />
+      <line x1="17" y1="9" x2="23" y2="15" />
+    </svg>
+  );
+}
+
+// Speaker icon - for speaker mode (speaker ON)
+function SpeakerOnIcon(props) {
+  return (
+    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+      <path d="M11 5L6 9H2v6h4l5 4V5z" />
+      <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+      <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+    </svg>
+  );
+}
+
 function formatDuration(ms) {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
   const h = Math.floor(totalSeconds / 3600);
@@ -103,6 +125,7 @@ export default function CallModal() {
     remoteStream,
     isMuted,
     isCameraOff,
+    speakerEnabled, // Speaker state (GPT-5.6-Luna)
     callError,
     callStartedAt,
     isReconnecting,
@@ -111,6 +134,8 @@ export default function CallModal() {
     endCall,
     toggleMute,
     toggleCamera,
+    toggleSpeaker, // Speaker toggle (GPT-5.6-Luna)
+    remoteAudioRef: contextRemoteAudioRef, // Get ref from context
     groupUpgrade,
     clearGroupUpgrade,
     requestAddPeople,
@@ -120,7 +145,8 @@ export default function CallModal() {
 
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
-  const remoteAudioRef = useRef(null);
+  // Use the ref from context for proper speaker control
+  const remoteAudioRef = contextRemoteAudioRef;
   const [elapsed, setElapsed] = useState(0);
 
   // Plain useEffect only re-runs when [localStream]/[remoteStream] change —
@@ -337,6 +363,16 @@ export default function CallModal() {
                 title={isCameraOff ? "Turn camera on" : "Turn camera off"}
               >
                 {isCameraOff ? <CameraOffIcon /> : <CameraIcon />}
+              </button>
+            )}
+            {callState === CALL_STATE.ONGOING && (
+              <button
+                type="button"
+                className={`call-btn call-btn-secondary ${speakerEnabled ? "call-btn-active" : ""}`}
+                onClick={toggleSpeaker}
+                title={speakerEnabled ? "Switch to earpiece" : "Switch to speaker"}
+              >
+                {speakerEnabled ? <SpeakerOnIcon /> : <SpeakerOffIcon />}
               </button>
             )}
             {callState === CALL_STATE.ONGOING && (

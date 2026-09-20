@@ -10,6 +10,7 @@ const GroupCallMessage = require("../models/Groupcallmessage");
 const CallChatReadState = require("../models/Callchatreadstate");
 const { enqueueGroupCallTranscription } = require("../services/Transcriptionservice");
 const { callAudioDir } = require("../middleware/upload");
+const activeCallRegistry = require("../services/activeCallRegistry");
 
 // Before kicking off transcription for a room, wait for its chunk
 // uploads to actually go QUIET rather than guessing a fixed delay.
@@ -49,7 +50,7 @@ const TRANSCRIPTION_POLL_INTERVAL_MS = 3000;
 // landing afterward). 3000ms * 6 = 18000ms comfortably clears a single
 // 10s gap plus normal network jitter.
 const TRANSCRIPTION_STABLE_CHECKS_REQUIRED = 6; // ~18s of no new files before we call it settled
-const TRANSCRIPTION_MAX_WAIT_MS = 45000;
+const TRANSCRIPTION_MAX_WAIT_MS = 120000;
 
 // Ground truth, when we have it, beats the file-system quiet-time guess
 // above. Every client calls socket.emit("recordingFlushed", { roomId,
@@ -663,6 +664,16 @@ try {
       if (meta) startDirectCallRecording(io, meta);
     });
 
+    socket.on("renegotiateOffer", ({ targetId, offer }) => {
+      if (!targetId || !offer) return;
+      io.to(getUserRoomName(targetId)).emit("renegotiateOffer", { from: userId, offer });
+    });
+
+    socket.on("renegotiateAnswer", ({ targetId, answer }) => {
+      if (!targetId || !answer) return;
+      io.to(getUserRoomName(targetId)).emit("renegotiateAnswer", { from: userId, answer });
+    });
+
     // Either side, any time during setup or the call: forward ICE candidates.
     socket.on("iceCandidate", ({ targetId, candidate }) => {
       if (!targetId || !candidate) return;
@@ -730,6 +741,162 @@ try {
       }
       if (!targetId) return;
       io.to(getUserRoomName(targetId)).emit("callEnded", {});
+    });
+
+    // ---- New call lifecycle events (GPT-5.6-Luna instructions) ----
+    // These provide proper call end behavior for both direct and group calls
+
+    socket.on("call:join", async (payload, ack) => {
+      try {
+        const { callId, callType } = payload;
+
+        if (!callId || !["direct", "group"].includes(callType)) {
+          return ack?.({ ok: false, error: "Invalid call information" });
+        }
+
+        await socket.join(`call:${callId}`);
+
+        activeCallRegistry.addParticipant(callId, callType, userId, socket.id);
+
+        socket.data.activeCalls = socket.data.activeCalls || new Set();
+        socket.data.activeCalls.add(callId);
+
+        socket.to(`call:${callId}`).emit("call:participant-joined", {
+          callId,
+          participantId: userId,
+        });
+
+        const call = activeCallRegistry.getCall(callId);
+
+        ack?.({
+          ok: true,
+          participants: Array.from(call?.participants.keys() || []),
+        });
+      } catch (error) {
+        console.error("call:join failed", error);
+        ack?.({ ok: false, error: "Unable to join call" });
+      }
+    });
+
+    socket.on("call:end", async (payload, ack) => {
+      try {
+        const { callId, callType } = payload;
+
+        if (!callId) {
+          return ack?.({ ok: false, error: "Missing callId" });
+        }
+
+        const call = activeCallRegistry.getCall(callId);
+
+        if (!call) {
+          return ack?.({ ok: true });
+        }
+
+        if (call.callType === "direct" || callType === "direct") {
+          // Direct calls end globally - both participants are disconnected
+          io.to(`call:${callId}`).emit("call:ended", {
+            callId,
+            callType: "direct",
+            endedBy: userId,
+            reason: "user-ended",
+          });
+
+          activeCallRegistry.deleteCall(callId);
+
+          ack?.({ ok: true });
+          return;
+        }
+
+        // Group calls: this event represents only the current user leaving
+        const updatedCall = activeCallRegistry.removeParticipant(
+          callId,
+          userId,
+          socket.id
+        );
+
+        socket.leave(`call:${callId}`);
+
+        socket.to(`call:${callId}`).emit("call:participant-left", {
+          callId,
+          participantId: userId,
+          reason: "user-left",
+        });
+
+        if (!updatedCall || updatedCall.participants.size === 0) {
+          io.to(`call:${callId}`).emit("call:ended", {
+            callId,
+            callType: "group",
+            endedBy: userId,
+            reason: "last-participant-left",
+          });
+
+          activeCallRegistry.deleteCall(callId);
+        }
+
+        ack?.({ ok: true });
+      } catch (error) {
+        console.error("call:end failed", error);
+        ack?.({ ok: false, error: "Unable to end call" });
+      }
+    });
+
+    socket.on("call:leave", async (payload, ack) => {
+      try {
+        const { callId, callType } = payload;
+
+        if (!callId) {
+          return ack?.({ ok: false, error: "Missing callId" });
+        }
+
+        const call = activeCallRegistry.getCall(callId);
+
+        if (!call) {
+          return ack?.({ ok: true });
+        }
+
+        // A direct call should not use call:leave as a local-only operation
+        // It must end for both users
+        if (call.callType === "direct" || callType === "direct") {
+          io.to(`call:${callId}`).emit("call:ended", {
+            callId,
+            callType: "direct",
+            endedBy: userId,
+            reason: "participant-left",
+          });
+
+          activeCallRegistry.deleteCall(callId);
+          ack?.({ ok: true });
+          return;
+        }
+
+        activeCallRegistry.removeParticipant(callId, userId, socket.id);
+
+        socket.leave(`call:${callId}`);
+
+        socket.to(`call:${callId}`).emit("call:participant-left", {
+          callId,
+          participantId: userId,
+          reason: "participant-left",
+        });
+
+        const updatedCall = activeCallRegistry.getCall(callId);
+
+        if (!updatedCall || updatedCall.participants.size === 0) {
+          io.to(`call:${callId}`).emit("call:ended", {
+            callId,
+            callType: "group",
+            endedBy: userId,
+            reason: "last-participant-left",
+          });
+
+          activeCallRegistry.deleteCall(callId);
+        }
+
+        ack?.({ ok: true });
+      } catch (error) {
+        console.error("call:leave failed", error);
+        ack?.({ ok: false });
+      }
     });
 
     // ---- Upgrade an ongoing 1:1 call into a link-based group call ----
@@ -1220,6 +1387,50 @@ try {
         // is the normal path for this, but this guard covers any timing
         // edge case where the timer fires around the same moment.)
         if (onlineUsers.has(userKey)) return;
+
+        // Handle active call registry disconnects (GPT-5.6-Luna instructions)
+        const activeCallsToHandle = Array.from(socket.data.activeCalls || []);
+        
+        for (const callId of activeCallsToHandle) {
+          const call = activeCallRegistry.getCall(callId);
+
+          if (!call) {
+            continue;
+          }
+
+          if (call.callType === "direct") {
+            io.to(`call:${callId}`).emit("call:ended", {
+              callId,
+              callType: "direct",
+              endedBy: userId,
+              reason: "disconnect",
+            });
+
+            activeCallRegistry.deleteCall(callId);
+            continue;
+          }
+
+          activeCallRegistry.removeParticipant(callId, userId, socket.id);
+
+          socket.to(`call:${callId}`).emit("call:participant-left", {
+            callId,
+            participantId: userId,
+            reason: "disconnect",
+          });
+
+          const updatedCall = activeCallRegistry.getCall(callId);
+
+          if (!updatedCall || updatedCall.participants.size === 0) {
+            io.to(`call:${callId}`).emit("call:ended", {
+              callId,
+              callType: "group",
+              endedBy: userId,
+              reason: "last-participant-disconnected",
+            });
+
+            activeCallRegistry.deleteCall(callId);
+          }
+        }
 
         // If this user dropped mid-call (closed the tab, lost connection
         // for real, etc.), let their call partner know instead of

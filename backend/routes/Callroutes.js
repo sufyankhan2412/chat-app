@@ -226,7 +226,16 @@ router.post(
       const seq = Number(req.body.seq);
       const sampleRate = Number(req.body.sampleRate);
 
-      if (!req.file || !Number.isFinite(joinedAt) || !Number.isFinite(seq)) {
+      if (
+        !req.file ||
+        !Number.isFinite(joinedAt) ||
+        !Number.isInteger(seq) ||
+        seq < 0 ||
+        !Number.isFinite(sampleRate) ||
+        sampleRate < 8000 ||
+        sampleRate > 96000 ||
+        req.file.buffer.length % 2 !== 0
+      ) {
         return res.status(400).json({ message: "Missing audio chunk, joinedAt, or seq" });
       }
 

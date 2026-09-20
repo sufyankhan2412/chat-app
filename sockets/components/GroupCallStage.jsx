@@ -95,6 +95,28 @@ function CloseIcon(props) {
   );
 }
 
+// Speaker icon - for earpiece mode (speaker OFF)
+function SpeakerOffIcon(props) {
+  return (
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+      <path d="M11 5L6 9H2v6h4l5 4V5z" />
+      <line x1="23" y1="9" x2="17" y2="15" />
+      <line x1="17" y1="9" x2="23" y2="15" />
+    </svg>
+  );
+}
+
+// Speaker icon - for speaker mode (speaker ON)
+function SpeakerOnIcon(props) {
+  return (
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+      <path d="M11 5L6 9H2v6h4l5 4V5z" />
+      <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+      <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+    </svg>
+  );
+}
+
 // Small floating chat panel — mirrors Meet's "in-call messages": lives only
 // as long as the parent <GroupCallStage/> is mounted (i.e. the call is
 // open), messages are plain component state passed down from
@@ -238,7 +260,7 @@ function ParticipantTile({ userId, stream, mode, profile, isHost, canRemove, onR
     <div className="gc-tile">
       {mode === "video" ? (
         <>
-          <video ref={videoRef} autoPlay playsInline data-call-media className="gc-tile-video" />
+          <video ref={videoRef} autoPlay playsInline data-call-media data-peer-audio className="gc-tile-video" />
           {!stream && (
             <div className="gc-tile-placeholder">
               <img src={resolveAvatarUrl(profile?.avatar)} alt={name} className="gc-tile-avatar" />
@@ -247,7 +269,7 @@ function ParticipantTile({ userId, stream, mode, profile, isHost, canRemove, onR
         </>
       ) : (
         <>
-          <audio ref={audioRef} autoPlay data-call-media />
+          <audio ref={audioRef} autoPlay data-call-media data-peer-audio />
           <div className="gc-tile-placeholder">
             <img src={resolveAvatarUrl(profile?.avatar)} alt={name} className="gc-tile-avatar" />
           </div>
@@ -282,12 +304,14 @@ export default function GroupCallStage({ onLeave }) {
     peers,
     isMuted,
     isCameraOff,
+    speakerEnabled, // Speaker state (GPT-5.6-Luna)
     hostId,
     isHost,
     callError,
     leaveCall,
     toggleMute,
     toggleCamera,
+    toggleSpeaker, // Speaker toggle (GPT-5.6-Luna)
     removeParticipant,
     chatMessages,
     unreadChatCount,
@@ -494,6 +518,14 @@ export default function GroupCallStage({ onLeave }) {
             {isCameraOff ? <CameraOffIcon /> : <CameraIcon />}
           </button>
         )}
+        <button
+          type="button"
+          className={`call-btn call-btn-secondary ${speakerEnabled ? "call-btn-active" : ""}`}
+          onClick={toggleSpeaker}
+          title={speakerEnabled ? "Switch to earpiece" : "Switch to speaker"}
+        >
+          {speakerEnabled ? <SpeakerOnIcon /> : <SpeakerOffIcon />}
+        </button>
         <button type="button" className="call-btn call-btn-decline" onClick={handleLeave} title="Leave call">
           <PhoneOffIcon />
         </button>

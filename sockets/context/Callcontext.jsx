@@ -12,6 +12,7 @@ import { getUserProfile, uploadCallAudioChunk } from "../api";
 import { CALL_AUDIO_CHUNK_MS, getCallAudioConstraints } from "../utils/audioRecording";
 import { createPcmChunkRecorder } from "../utils/pcmRecorder";
 import { ICE_SERVERS } from "../utils/iceServers";
+import { applyAudioOutput, isAudioOutputSupported } from "../utils/audioOutput";
 
 const CallContext = createContext(null);
 
@@ -131,6 +132,8 @@ export function CallProvider({ children }) {
   const [remoteStream, setRemoteStream] = useState(null);
   const [isMuted, setIsMuted] = useState(false);
   const [isCameraOff, setIsCameraOff] = useState(false);
+  // Speaker control (GPT-5.6-Luna instructions) - default FALSE = earpiece mode
+  const [speakerEnabled, setSpeakerEnabled] = useState(false);
   const [callError, setCallError] = useState("");
   const [callStartedAt, setCallStartedAt] = useState(null);
   // True while the peer connection is in WebRTC's "disconnected" state —
@@ -167,6 +170,7 @@ export function CallProvider({ children }) {
   const localStreamRef = useRef(null);
   const pendingOfferRef = useRef(null); // { from, offer, callType } while ringing
   const pendingCandidatesRef = useRef([]); // ICE candidates that arrive before remote description is set
+  const remoteAudioRef = useRef(null); // Ref to remote audio/video element for speaker control
 
   // My own mic-only recorder for this 1:1 call, for transcription — same
   // mechanism GroupCallContext.jsx uses for group calls, now reused here
@@ -184,6 +188,7 @@ export function CallProvider({ children }) {
   // land on the server before telling the server the call is over — see
   // stopRecordingAndFlush below for why this matters.
   const pendingUploadsRef = useRef(new Set());
+  const uploadChainRef = useRef(Promise.resolve());
   // Recording stream — wraps a CLONE of localStreamRef's (Stream A's)
   // audio track, not a second real capture. See startRecording below and
   // the history note in audioRecording.js for why: two concurrent
@@ -213,6 +218,7 @@ export function CallProvider({ children }) {
     const recorder = recorderRef.current;
     if (!recorder) return;
     const roomId = callRoomIdRef.current;
+    const joinedAt = callJoinedAtRef.current;
     await recorder.flush(); // includes the AudioWorklet's partial final buffer
     recorder.stop();
     recorderRef.current = null;
@@ -233,10 +239,10 @@ export function CallProvider({ children }) {
     // identical to "recording actually stopped") and instead wait for
     // real confirmation from both sides of the call. See
     // Socketmanager.js's waitForAudioUploadsToSettle.
-    if (roomId && socket && Number.isFinite(callJoinedAtRef.current)) {
+    if (roomId && socket && Number.isFinite(joinedAt)) {
       socket.emit("recordingFlushed", {
         roomId,
-        joinedAt: callJoinedAtRef.current,
+        joinedAt,
       });
     }
   }, [socket]);
@@ -287,6 +293,7 @@ export function CallProvider({ children }) {
     callRoomIdRef.current = null;
     callJoinedAtRef.current = null;
     chunkSeqRef.current = 0;
+    uploadChainRef.current = Promise.resolve();
     pendingOfferRef.current = null;
     pendingCandidatesRef.current = [];
 
@@ -296,6 +303,7 @@ export function CallProvider({ children }) {
     setRemoteStream(null);
     setIsMuted(false);
     setIsCameraOff(false);
+    setSpeakerEnabled(false); // Reset speaker to earpiece mode
     setCallStartedAt(null);
   }, []);
 
@@ -439,6 +447,7 @@ export function CallProvider({ children }) {
   // while toggleMute sets `enabled = false` on the original, WITHOUT
   // ever opening a second hardware capture.
   const startRecording = useCallback((stream, roomId, joinedAt) => {
+    const recordingRoomId = roomId;
     // Guard: need an active call stream to confirm the call is live, and
     // a valid roomId to key the idempotency guard.
     if (!stream || !stream.getAudioTracks().length) return;
@@ -474,15 +483,18 @@ export function CallProvider({ children }) {
         stream: recordingStream,
         chunkMs: CALL_AUDIO_CHUNK_MS,
         onChunk: (pcmArrayBuffer, sampleRate) => {
-          if (!callRoomIdRef.current) return;
+          if (!recordingRoomId) return;
           const seq = chunkSeqRef.current++;
-          const uploadPromise = uploadChunkWithRetry(
-            callRoomIdRef.current,
-            joinedAt,
-            seq,
-            pcmArrayBuffer,
-            sampleRate
-          )
+          const uploadPromise = uploadChainRef.current
+            .then(() =>
+              uploadChunkWithRetry(
+                recordingRoomId,
+                joinedAt,
+                seq,
+                pcmArrayBuffer,
+                sampleRate
+              )
+            )
             .catch((err) => {
               console.error(
                 `uploadCallAudioChunk error (seq=${seq}, all retries exhausted):`,
@@ -492,6 +504,7 @@ export function CallProvider({ children }) {
             .finally(() => {
               pendingUploadsRef.current.delete(uploadPromise);
             });
+          uploadChainRef.current = uploadPromise.catch(() => {});
           pendingUploadsRef.current.add(uploadPromise);
         },
       });
@@ -634,7 +647,8 @@ export function CallProvider({ children }) {
   }, [socket, resetCallState]);
 
   // ---- Hang up / cancel (works for any state) ----
-  // Async now: waits for the recorder's final chunk (whatever was
+  // Async now: sends the hangup signal immediately so the remote UI ends
+  // without waiting for transcription uploads, then waits for the recorder's final chunk (whatever was
   // captured since the last scheduled 10s flush) to actually finish
   // uploading BEFORE telling the server the call ended. The server
   // starts polling for "has this room's audio gone quiet" as soon as it
@@ -643,7 +657,6 @@ export function CallProvider({ children }) {
   // still mid-upload, which Whisper fills in with invented (hallucinated)
   // text rather than failing cleanly.
   const endCall = useCallback(async () => {
-    await stopRecordingAndFlush();
     if (socket) {
       if (callState === CALL_STATE.OUTGOING && remoteUser?._id) {
         socket.emit("cancelCall", { receiverId: remoteUser._id });
@@ -653,7 +666,11 @@ export function CallProvider({ children }) {
         socket.emit("endCall", { targetId: pendingOfferRef.current.from });
       }
     }
+    // Start recorder cleanup before reset (so its final chunk is preserved),
+    // but do not wait for it before ending this browser's UI and media.
+    const cleanup = stopRecordingAndFlush();
     resetCallState();
+    await cleanup;
   }, [socket, callState, remoteUser, resetCallState, stopRecordingAndFlush]);
 
   // Keep endCallRef pointed at the latest endCall closure — see the ref's
@@ -691,6 +708,31 @@ export function CallProvider({ children }) {
     });
     setIsCameraOff(nextOff);
   }, [isCameraOff]);
+
+  // Toggle speaker on/off (GPT-5.6-Luna instructions)
+  const toggleSpeaker = useCallback(async () => {
+    const nextSpeakerEnabled = !speakerEnabled;
+    setSpeakerEnabled(nextSpeakerEnabled);
+
+    const remoteElements = document.querySelectorAll(
+      "audio[data-call-media], video.call-remote-video[data-call-media]"
+    );
+    await Promise.all(
+      Array.from(remoteElements).map((element) =>
+        applyAudioOutput(element, nextSpeakerEnabled)
+      )
+    );
+  }, [speakerEnabled]);
+
+  // Apply speaker setting when remote stream changes
+  useEffect(() => {
+    if (remoteStream) {
+      const remoteElements = document.querySelectorAll(
+        "audio[data-call-media], video.call-remote-video[data-call-media]"
+      );
+      remoteElements.forEach((element) => applyAudioOutput(element, speakerEnabled));
+    }
+  }, [remoteStream, speakerEnabled]);
 
   // ---- "Add people" — turn this ongoing 1:1 call into a group call ----
   // Lives in the call interface itself (CallModal renders the button),
@@ -798,8 +840,9 @@ export function CallProvider({ children }) {
     // instead of guaranteeing it lands first — that race is exactly what
     // was cutting the tail end off recordings/transcripts.
     const onCallEnded = async () => {
-      await stopRecordingAndFlush();
+      const cleanup = stopRecordingAndFlush();
       resetCallState();
+      await cleanup;
     };
 
     const onCallFailed = ({ reason }) => {
@@ -899,6 +942,7 @@ export function CallProvider({ children }) {
     remoteStream,
     isMuted,
     isCameraOff,
+    speakerEnabled, // Add speaker state
     callError,
     callStartedAt,
     isReconnecting,
@@ -909,10 +953,12 @@ export function CallProvider({ children }) {
     endCall,
     toggleMute,
     toggleCamera,
+    toggleSpeaker, // Add speaker toggle
     groupUpgrade,
     clearGroupUpgrade,
     requestAddPeople,
     addingPeople,
+    remoteAudioRef, // Expose ref for UI to attach to audio/video element
   };
 
   return <CallContext.Provider value={value}>{children}</CallContext.Provider>;

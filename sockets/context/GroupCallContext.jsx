@@ -12,6 +12,7 @@ import { createCallLink, getGroupCallChatHistory, uploadCallAudioChunk } from ".
 import { CALL_AUDIO_CHUNK_MS, getCallAudioConstraints } from "../utils/audioRecording";
 import { createPcmChunkRecorder } from "../utils/pcmRecorder";
 import { ICE_SERVERS } from "../utils/iceServers";
+import { applyAudioOutput, isAudioOutputSupported } from "../utils/audioOutput";
 
 const GroupCallContext = createContext(null);
 
@@ -96,6 +97,8 @@ export function GroupCallProvider({ children }) {
   const [peers, setPeers] = useState(new Map());
   const [isMuted, setIsMuted] = useState(false);
   const [isCameraOff, setIsCameraOff] = useState(false);
+  // Speaker control (GPT-5.6-Luna instructions) - default FALSE = earpiece mode
+  const [speakerEnabled, setSpeakerEnabled] = useState(false);
   const [callError, setCallError] = useState("");
   const [callStartedAt, setCallStartedAt] = useState(null);
   // Whoever created this call link — only they can remove other
@@ -153,6 +156,7 @@ export function GroupCallProvider({ children }) {
   // stopRecordingAndFlush below, and the identical mechanism/reasoning
   // in Callcontext.jsx.
   const pendingUploadsRef = useRef(new Set());
+  const uploadChainRef = useRef(Promise.resolve());
   // Recording stream — wraps a CLONE of localStreamRef's (Stream A's)
   // audio track, not a second real capture. See startRecording below and
   // the history note in audioRecording.js for why: two concurrent
@@ -265,6 +269,7 @@ export function GroupCallProvider({ children }) {
     setPeers(new Map());
     setIsMuted(false);
     setIsCameraOff(false);
+    setSpeakerEnabled(false); // Reset speaker to earpiece mode
     setCallStartedAt(null);
     setHostId(null);
     // Only the in-memory VIEW of the chat is cleared here — the messages
@@ -493,20 +498,25 @@ export function GroupCallProvider({ children }) {
       });
 
       chunkSeqRef.current = 0;
+      uploadChainRef.current = Promise.resolve();
+      const recordingRoomId = roomId;
 
       const recorder = createPcmChunkRecorder({
         stream: recordingStream,
         chunkMs: CALL_AUDIO_CHUNK_MS,
         onChunk: (pcmArrayBuffer, sampleRate) => {
-          if (!roomIdRef.current) return;
+          if (!recordingRoomId) return;
           const seq = chunkSeqRef.current++;
-          const uploadPromise = uploadChunkWithRetry(
-            roomIdRef.current,
-            joinedAt,
-            seq,
-            pcmArrayBuffer,
-            sampleRate
-          )
+          const uploadPromise = uploadChainRef.current
+            .then(() =>
+              uploadChunkWithRetry(
+                recordingRoomId,
+                joinedAt,
+                seq,
+                pcmArrayBuffer,
+                sampleRate
+              )
+            )
             .catch((err) => {
               console.error(
                 `uploadCallAudioChunk error (seq=${seq}, all retries exhausted):`,
@@ -516,6 +526,7 @@ export function GroupCallProvider({ children }) {
             .finally(() => {
               pendingUploadsRef.current.delete(uploadPromise);
             });
+          uploadChainRef.current = uploadPromise.catch(() => {});
           pendingUploadsRef.current.add(uploadPromise);
         },
       });
@@ -686,6 +697,23 @@ export function GroupCallProvider({ children }) {
     localStreamRef.current.getVideoTracks().forEach((t) => (t.enabled = !next));
     setIsCameraOff(next);
   }, [isCameraOff]);
+
+  // Toggle speaker on/off (GPT-5.6-Luna instructions)
+  const toggleSpeaker = useCallback(async () => {
+    const nextSpeakerEnabled = !speakerEnabled;
+    setSpeakerEnabled(nextSpeakerEnabled);
+    
+    // Apply to all remote peer audio/video elements
+    const remoteElements = document.querySelectorAll('[data-peer-audio]');
+    for (const element of remoteElements) {
+      await applyAudioOutput(element, nextSpeakerEnabled);
+    }
+  }, [speakerEnabled]);
+
+  useEffect(() => {
+    const remoteElements = document.querySelectorAll("[data-peer-audio]");
+    remoteElements.forEach((element) => applyAudioOutput(element, speakerEnabled));
+  }, [speakerEnabled, peers]);
 
   // ---- Socket listeners: room join/leave + WebRTC signaling relay ----
   useEffect(() => {
@@ -886,6 +914,7 @@ export function GroupCallProvider({ children }) {
     peers,
     isMuted,
     isCameraOff,
+    speakerEnabled, // Add speaker state
     callError,
     callStartedAt,
     hostId,
@@ -895,6 +924,7 @@ export function GroupCallProvider({ children }) {
     leaveCall,
     toggleMute,
     toggleCamera,
+    toggleSpeaker, // Add speaker toggle
     removeParticipant,
     chatMessages,
     unreadChatCount,

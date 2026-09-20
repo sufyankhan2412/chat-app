@@ -125,6 +125,7 @@ export function createPcmChunkRecorder({ stream, chunkMs, onChunk }) {
   }
 
   function handleSamples(samples) {
+    if (!samples || typeof samples.slice !== "function") return;
     const copy = samples.slice();
     floatBuffers.push(copy);
     bufferedFrames += copy.length;
@@ -166,8 +167,13 @@ export function createPcmChunkRecorder({ stream, chunkMs, onChunk }) {
       }
       processorNode = new AudioWorkletNode(audioContext, "pcm-capture-processor");
       usesWorklet = true;
-      processorNode.port.onmessage = (event) => handleSamples(event.data);
-      processorNode.port.addEventListener("message", handleWorkletMessage);
+      processorNode.port.onmessage = (event) => {
+        if (event.data?.type === "flushed") {
+          handleWorkletMessage(event);
+        } else {
+          handleSamples(event.data);
+        }
+      };
       sourceNode.connect(processorNode);
     } catch (error) {
       console.warn("createPcmChunkRecorder: AudioWorklet unavailable, using fallback", error);
@@ -206,7 +212,7 @@ export function createPcmChunkRecorder({ stream, chunkMs, onChunk }) {
     if (suspendWatchdog) clearInterval(suspendWatchdog);
     emitChunk();
     sourceNode.disconnect();
-    processorNode?.port.removeEventListener("message", handleWorkletMessage);
+    if (processorNode?.port) processorNode.port.onmessage = null;
     processorNode?.disconnect();
     audioContext.close().catch(() => {});
   }

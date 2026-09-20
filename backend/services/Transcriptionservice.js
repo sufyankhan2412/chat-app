@@ -185,11 +185,7 @@ function convertToWav(rawWavPath) {
     //    This aggressively removes keyboard clatter, fan noise, room tone,
     //    and other stationary background sounds while preserving speech.
     //
-    // 3. silenceremove=start_periods=1:start_silence=0.2:start_threshold=-50dB:detection=peak
-    //    Remove leading silence (first 200ms below -50dB peak).
-    //    Prevents Whisper from hallucinating on the initial silence.
-    //
-    // 4. anlmdn=s=9:p=0.002:r=0.002:m=15
+    // 3. anlmdn=s=9:p=0.002:r=0.002:m=15
     //    Non-local means denoising (spatial denoising in frequency domain).
     //    This is a different algorithm than afftdn - it works by comparing
     //    similar spectral patches and averaging them to reduce random noise.
@@ -199,7 +195,7 @@ function convertToWav(rawWavPath) {
     //      - m=15: Output mode (15 = cleaned output only)
     //    Catches noise that afftdn missed (non-stationary noise).
     //
-    // 5. compand=attacks=0.1:decays=0.3:points=-60/-60|-30/-15|-20/-9|-10/-6|0/-3|20/0:soft-knee=6:gain=0
+    // 4. compand=attacks=0.1:decays=0.3:points=-60/-60|-30/-15|-20/-9|-10/-6|0/-3|20/0:soft-knee=6:gain=0
     //    Dynamic range compression optimized for speech intelligibility:
     //      - Brings up quiet speech (voices far from mic, soft speakers)
     //      - Controls loud peaks (shouting, mic bumps)
@@ -213,7 +209,7 @@ function convertToWav(rawWavPath) {
     //      - 0/-3:    0dB input → -3dB output (slight reduction)
     //      - 20/0:    20dB input → 0dB output (strong limiting on peaks)
     //
-    // 6. loudnorm=I=-16:TP=-1.5:LRA=11:dual_mono=true
+    // 5. loudnorm=I=-16:TP=-1.5:LRA=11:dual_mono=true
     //    EBU R128 integrated loudness normalization (ITU-R BS.1770).
     //    This ensures ALL recordings reach Whisper at the SAME level
     //    (-16 LUFS integrated), regardless of how quiet the original was.
@@ -236,7 +232,6 @@ function convertToWav(rawWavPath) {
         "-af",
         "highpass=f=200," +
         "afftdn=nf=-30:nt=w:om=o:tn=1," +
-        "silenceremove=start_periods=1:start_silence=0.2:start_threshold=-50dB:detection=peak," +
         "anlmdn=s=9:p=0.002:r=0.002:m=15," +
         "compand=attacks=0.1:decays=0.3:points=-60/-60|-30/-15|-20/-9|-10/-6|0/-3|20/0:soft-knee=6:gain=0," +
         "loudnorm=I=-16:TP=-1.5:LRA=11:dual_mono=true",
@@ -439,7 +434,7 @@ async function enqueueGroupCallTranscription(roomId, io) {
       sessions.get(key).push({ seq: parsed.seq, file, ...parsed });
     });
 
-    const coveredJoins = new Set(); // `${userId}-${joinedAtMs}` that had at least one chunk
+    const coveredParticipantJoins = new Set(); // `${userId}-${participant.joinedAt}` matched by transcription
 
     const jobs = [...sessions.entries()].map(async ([key, rawChunks]) => {
       rawChunks.sort((a, b) => a.seq - b.seq);
@@ -532,7 +527,7 @@ async function enqueueGroupCallTranscription(roomId, io) {
         });
       }
 
-      coveredJoins.add(key);
+      coveredParticipantJoins.add(`${userId}-${entry.joinedAt.getTime()}`);
       const speakerName = entry.user?.username || "Unknown";
       const offsetSec = (joinedAtMs - call.startedAt.getTime()) / 1000;
 
@@ -603,7 +598,12 @@ async function enqueueGroupCallTranscription(roomId, io) {
     const missing = [
       ...new Set(
         call.participants
-          .filter((p) => !coveredJoins.has(`${String(p.user?._id || p.user)}-${p.joinedAt.getTime()}`))
+          .filter(
+            (p) =>
+              !coveredParticipantJoins.has(
+                `${String(p.user?._id || p.user)}-${p.joinedAt.getTime()}`
+              )
+          )
           .map((p) => p.user?.username || "Unknown")
       ),
     ];
