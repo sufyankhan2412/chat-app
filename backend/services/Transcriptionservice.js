@@ -279,7 +279,22 @@ function transcribeFile(filePath) {
       "-bs", WHISPER_BEAM_SIZE, // beam search — see comment near WHISPER_BEAM_SIZE above
     ];
     if (WHISPER_LANGUAGE !== "auto") args.push("-l", WHISPER_LANGUAGE);
-    if (WHISPER_VAD_MODEL_PATH) args.push("--vad", "-vm", WHISPER_VAD_MODEL_PATH);
+    if (WHISPER_VAD_MODEL_PATH) {
+      args.push(
+        "--vad",
+        "-vm",
+        WHISPER_VAD_MODEL_PATH,
+        "-vsd",
+        "350",
+        "-vmsd",
+        "12",
+        "-vp",
+          "80",
+          "-sow",
+          "-ml",
+          "120"
+      );
+    }
     execFile(
       WHISPER_CLI,
       args,
@@ -369,7 +384,7 @@ function renderTranscriptText({ roomId, participantNames, startedAt, endedAt, se
 
   const announcedOverlaps = new Set();
   segments.forEach((seg, i) => {
-    lines.push(`[${formatTimestamp(seg.start)}] ${seg.speaker}:`);
+    lines.push(`[${formatTimestamp(seg.start)} - ${formatTimestamp(seg.end)}] ${seg.speaker}:`);
     lines.push(seg.text);
     lines.push("");
 

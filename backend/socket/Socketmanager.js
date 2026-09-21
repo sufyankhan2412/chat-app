@@ -75,7 +75,7 @@ const TRANSCRIPTION_MAX_WAIT_MS = 120000;
 // The quiet-time poll below still runs as a fallback for participants
 // who never get the chance to ack cleanly (crashed tab, killed
 // connection, closed laptop lid) — same as before.
-const recordingFlushAcks = new Map(); // roomId -> Set<"userId:joinedAtMs">
+const recordingFlushAcks = new Map(); // roomId -> Map<sessionKey, lastSeq>
 
 // ---------------------------------------------------------------------
 // Disconnect grace period.
@@ -156,7 +156,20 @@ function waitForAudioUploadsToSettle(roomId, expectedSessions = []) {
       const acked = recordingFlushAcks.get(roomId);
       const allAcked =
         expectedSessions.length > 0 &&
-        expectedSessions.every((sessionKey) => acked?.has(sessionKey));
+        expectedSessions.every((sessionKey) => {
+          const lastSeq = acked?.get(sessionKey);
+          if (!Number.isInteger(lastSeq) || lastSeq < -1) return false;
+          const separator = sessionKey.lastIndexOf(":");
+          const userId = sessionKey.slice(0, separator);
+          const joinedAt = sessionKey.slice(separator + 1);
+          const dir = path.join(callAudioDir, String(roomId));
+          for (let seq = 0; seq <= lastSeq; seq++) {
+            const padded = String(seq).padStart(6, "0");
+            const file = path.join(dir, `${userId}-${joinedAt}-${padded}.pcm`);
+            if (!fs.existsSync(file)) return false;
+          }
+          return true;
+        });
       if (allAcked) {
         return resolve();
       }
@@ -599,12 +612,12 @@ try {
     // per-session rather than per-user. Older clients that don't send
     // joinedAt are simply ignored here; the quiet-time poll in
     // waitForAudioUploadsToSettle still covers them as a fallback.
-    socket.on("recordingFlushed", ({ roomId, joinedAt }) => {
-      if (!roomId || !Number.isFinite(joinedAt)) return;
+    socket.on("recordingFlushed", ({ roomId, joinedAt, lastSeq }) => {
+      if (!roomId || !Number.isFinite(joinedAt) || !Number.isInteger(lastSeq) || lastSeq < -1) return;
       if (!recordingFlushAcks.has(roomId)) {
-        recordingFlushAcks.set(roomId, new Set());
+        recordingFlushAcks.set(roomId, new Map());
       }
-      recordingFlushAcks.get(roomId).add(`${userKey}:${joinedAt}`);
+      recordingFlushAcks.get(roomId).set(`${userKey}:${joinedAt}`, lastSeq);
     });
 
     // ---- WebRTC call signaling (1:1 audio/video calls) ----

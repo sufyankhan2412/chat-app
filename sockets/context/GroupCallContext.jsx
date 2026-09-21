@@ -179,6 +179,7 @@ export function GroupCallProvider({ children }) {
     const recorder = recorderRef.current;
     if (!recorder) return;
     const currentRoomId = roomIdRef.current;
+    const currentJoinedAt = joinedAtRef.current;
     await recorder.flush();
     recorder.stop();
     recorderRef.current = null;
@@ -195,10 +196,11 @@ export function GroupCallProvider({ children }) {
     }
     // Ground-truth signal for the server's transcription job — see the
     // identical emit + comment in Callcontext.jsx's stopRecordingAndFlush.
-    if (currentRoomId && socket && Number.isFinite(joinedAtRef.current)) {
+    if (currentRoomId && socket && Number.isFinite(currentJoinedAt)) {
       socket.emit("recordingFlushed", {
         roomId: currentRoomId,
-        joinedAt: joinedAtRef.current,
+        joinedAt: currentJoinedAt,
+        lastSeq: chunkSeqRef.current - 1,
       });
     }
   }, [socket]);

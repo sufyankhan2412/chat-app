@@ -243,6 +243,7 @@ export function CallProvider({ children }) {
       socket.emit("recordingFlushed", {
         roomId,
         joinedAt,
+        lastSeq: chunkSeqRef.current - 1,
       });
     }
   }, [socket]);
