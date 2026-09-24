@@ -23,6 +23,7 @@ const allowedOrigins = [
   "http://localhost:5173",
   "https://2x7n90c5-5173.asse.devtunnels.ms",
   "http://192.168.18.79:5173",
+  "https://chat-app-pi-green-77.vercel.app",
   process.env.FRONTEND_URL,
 ].filter(Boolean);
 
