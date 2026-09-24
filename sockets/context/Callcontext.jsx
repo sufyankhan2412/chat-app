@@ -136,6 +136,14 @@ export function CallProvider({ children }) {
   const [speakerEnabled, setSpeakerEnabled] = useState(false);
   const [callError, setCallError] = useState("");
   const [callStartedAt, setCallStartedAt] = useState(null);
+  // Recording state
+  const [isRecording, setIsRecording] = useState(false);
+  const [remoteIsRecording, setRemoteIsRecording] = useState(false);
+  const mediaRecorderRef = useRef(null);
+  const recordedChunksRef = useRef([]);
+  // Transcription warning
+  const [showTranscriptionWarning, setShowTranscriptionWarning] = useState(false);
+  // Live transcription removed - transcripts are now generated as downloadable files after call ends
   // True while the peer connection is in WebRTC's "disconnected" state —
   // i.e. media was flowing and then stopped, most commonly because one
   // side's network briefly dropped (Wi-Fi handoff, a few seconds of no
@@ -258,6 +266,19 @@ export function CallProvider({ children }) {
       reconnectTimerRef.current = null;
     }
     setIsReconnecting(false);
+    
+    // Stop and save recording if active
+    if (isRecording && mediaRecorderRef.current) {
+      try {
+        const recorder = mediaRecorderRef.current.recorder || mediaRecorderRef.current;
+        if (recorder.state !== 'inactive') {
+          recorder.stop(); // This will trigger onstop callback which saves the file
+        }
+      } catch (err) {
+        console.error('[RECORDING] Failed to stop on call end:', err);
+      }
+    }
+    
     if (pcRef.current) {
       pcRef.current.onicecandidate = null;
       pcRef.current.ontrack = null;
@@ -306,7 +327,9 @@ export function CallProvider({ children }) {
     setIsCameraOff(false);
     setSpeakerEnabled(false); // Reset speaker to earpiece mode
     setCallStartedAt(null);
-  }, []);
+    setIsRecording(false);
+    // Transcript state removed - transcripts are now file-based
+  }, [isRecording]);
 
   const createPeerConnection = useCallback(
     (targetId) => {
@@ -483,7 +506,7 @@ export function CallProvider({ children }) {
       const recorder = createPcmChunkRecorder({
         stream: recordingStream,
         chunkMs: CALL_AUDIO_CHUNK_MS,
-        onChunk: (pcmArrayBuffer, sampleRate) => {
+        onChunk: (pcmArrayBuffer, sampleRate, timing) => {
           if (!recordingRoomId) return;
           const seq = chunkSeqRef.current++;
           const uploadPromise = uploadChainRef.current
@@ -493,7 +516,8 @@ export function CallProvider({ children }) {
                 joinedAt,
                 seq,
                 pcmArrayBuffer,
-                sampleRate
+                sampleRate,
+                timing
               )
             )
             .catch((err) => {
@@ -690,13 +714,9 @@ export function CallProvider({ children }) {
       track.enabled = !nextMuted;
     });
 
-    // NOTE: The recording stream (recordingStreamRef) wraps a CLONE of
-    // this same track, created in startRecording. A clone's `enabled`
-    // flag is independent per spec, so toggling it here on the original
-    // never touches the clone — recording keeps running, at full quality,
-    // even while muted. This is intentional: we want to record everything
-    // said during the call, even when the user is muted (for accurate
-    // transcription).
+    recordingStreamRef.current?.getAudioTracks().forEach((track) => {
+      track.enabled = !nextMuted;
+    });
 
     setIsMuted(nextMuted);
   }, [isMuted]);
@@ -904,6 +924,8 @@ export function CallProvider({ children }) {
     socket.on("groupCallError", onGroupCallError);
     socket.on("callSessionStarted", onCallSessionStarted);
 
+    // Live transcription handler removed - transcripts are now generated as files after call ends
+
     return () => {
       socket.off("incomingCall", onIncomingCall);
       socket.off("callAnswered", onCallAnswered);
@@ -917,6 +939,7 @@ export function CallProvider({ children }) {
       socket.off("callUpgraded", onCallUpgraded);
       socket.off("groupCallError", onGroupCallError);
       socket.off("callSessionStarted", onCallSessionStarted);
+      // transcription:segment listener removed
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [socket, callState, resetCallState, addingPeople, startRecording, stopRecordingAndFlush]);
@@ -927,6 +950,222 @@ export function CallProvider({ children }) {
     const t = setTimeout(() => setCallError(""), 4000);
     return () => clearTimeout(t);
   }, [callError]);
+
+  // Show transcription warning when call becomes ONGOING
+  useEffect(() => {
+    if (callState === CALL_STATE.ONGOING && !showTranscriptionWarning) {
+      setShowTranscriptionWarning(true);
+      // Auto-hide after 5 seconds
+      const timer = setTimeout(() => setShowTranscriptionWarning(false), 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [callState, showTranscriptionWarning]);
+
+  // Listen for transcription notice from server (sent to both users)
+  useEffect(() => {
+    if (!socket) return;
+
+    socket.on("transcriptionNotice", () => {
+      setShowTranscriptionWarning(true);
+      const timer = setTimeout(() => setShowTranscriptionWarning(false), 5000);
+      return () => clearTimeout(timer);
+    });
+
+    return () => {
+      socket.off("transcriptionNotice");
+    };
+  }, [socket]);
+
+  // Listen for remote recording status
+  useEffect(() => {
+    if (!socket) return;
+
+    socket.on("remoteRecordingStatus", ({ isRecording: remoteRecording }) => {
+      setRemoteIsRecording(remoteRecording);
+    });
+
+    return () => {
+      socket.off("remoteRecordingStatus");
+    };
+  }, [socket]);
+
+  // Start/stop local recording
+  const startLocalRecording = useCallback(() => {
+    if (!localStream || isRecording) return;
+
+    try {
+      let streamToRecord;
+      
+      if (callType === "video") {
+        // For video calls, we need to composite both video streams
+        // Create a canvas to combine local and remote video
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        
+        // Set canvas size (720p)
+        canvas.width = 1280;
+        canvas.height = 720;
+        
+        // Create video elements for both streams
+        const localVideo = document.createElement('video');
+        localVideo.srcObject = localStream;
+        localVideo.play();
+        
+        const remoteVideo = document.createElement('video');
+        if (remoteStream) {
+          remoteVideo.srcObject = remoteStream;
+          remoteVideo.play();
+        }
+        
+        // Composite the videos onto canvas at 30fps
+        const drawFrame = () => {
+          // Clear canvas
+          ctx.fillStyle = '#000';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          
+          // Draw remote video (larger, main view)
+          if (remoteVideo.readyState === remoteVideo.HAVE_ENOUGH_DATA) {
+            ctx.drawImage(remoteVideo, 0, 0, canvas.width, canvas.height);
+          }
+          
+          // Draw local video (smaller, picture-in-picture in bottom-right)
+          if (localVideo.readyState === localVideo.HAVE_ENOUGH_DATA) {
+            const pipWidth = 320;
+            const pipHeight = 240;
+            const pipX = canvas.width - pipWidth - 20;
+            const pipY = canvas.height - pipHeight - 20;
+            
+            // Draw border
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 3;
+            ctx.strokeRect(pipX, pipY, pipWidth, pipHeight);
+            
+            // Draw local video
+            ctx.drawImage(localVideo, pipX, pipY, pipWidth, pipHeight);
+          }
+        };
+        
+        // Start drawing loop
+        const frameInterval = setInterval(drawFrame, 1000 / 30); // 30fps
+        
+        // Get stream from canvas
+        const canvasStream = canvas.captureStream(30);
+        
+        // Add audio from both streams
+        streamToRecord = new MediaStream();
+        canvasStream.getVideoTracks().forEach(track => streamToRecord.addTrack(track));
+        localStream.getAudioTracks().forEach(track => streamToRecord.addTrack(track));
+        if (remoteStream) {
+          remoteStream.getAudioTracks().forEach(track => streamToRecord.addTrack(track.clone()));
+        }
+        
+        // Store cleanup function
+        mediaRecorderRef.current = {
+          cleanup: () => {
+            clearInterval(frameInterval);
+            localVideo.srcObject = null;
+            remoteVideo.srcObject = null;
+          }
+        };
+      } else {
+        // For audio calls, record only audio
+        streamToRecord = new MediaStream();
+        localStream.getAudioTracks().forEach(track => streamToRecord.addTrack(track));
+        
+        // Add remote audio
+        if (remoteStream) {
+          remoteStream.getAudioTracks().forEach(track => streamToRecord.addTrack(track.clone()));
+        }
+      }
+
+      const mimeType = callType === "video" 
+        ? "video/webm;codecs=vp8,opus"
+        : "audio/webm;codecs=opus";
+
+      const mediaRecorder = new MediaRecorder(streamToRecord, {
+        mimeType: MediaRecorder.isTypeSupported(mimeType) ? mimeType : undefined,
+        videoBitsPerSecond: callType === "video" ? 2500000 : undefined, // 2.5 Mbps for video
+      });
+
+      recordedChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          recordedChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = () => {
+        const blob = new Blob(recordedChunksRef.current, {
+          type: callType === "video" ? "video/webm" : "audio/webm",
+        });
+
+        // Create download link
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `${callType}-call-${Date.now()}.webm`;
+        a.click();
+        URL.revokeObjectURL(url);
+
+        recordedChunksRef.current = [];
+        
+        // Cleanup video canvas if it exists
+        if (mediaRecorderRef.current?.cleanup) {
+          mediaRecorderRef.current.cleanup();
+        }
+      };
+
+      mediaRecorder.start(1000); // Collect data every second
+      
+      // Store recorder reference
+      if (mediaRecorderRef.current?.cleanup) {
+        mediaRecorderRef.current.recorder = mediaRecorder;
+      } else {
+        mediaRecorderRef.current = { recorder: mediaRecorder };
+      }
+      
+      setIsRecording(true);
+
+      // Notify remote user
+      if (socket && remoteUser) {
+        socket.emit("recordingStatus", {
+          targetId: remoteUser._id,
+          isRecording: true,
+        });
+      }
+
+      console.log("[LOCAL RECORDING] Started");
+    } catch (error) {
+      console.error("[LOCAL RECORDING] Failed to start:", error);
+      setCallError("Failed to start recording");
+    }
+  }, [localStream, remoteStream, callType, isRecording, socket, remoteUser]);
+
+  const stopLocalRecording = useCallback(() => {
+    if (!mediaRecorderRef.current || !isRecording) return;
+
+    try {
+      const recorder = mediaRecorderRef.current.recorder || mediaRecorderRef.current;
+      recorder.stop();
+      
+      // Cleanup will happen in onstop callback
+      mediaRecorderRef.current = null;
+      setIsRecording(false);
+
+      // Notify remote user
+      if (socket && remoteUser) {
+        socket.emit("recordingStatus", {
+          targetId: remoteUser._id,
+          isRecording: false,
+        });
+      }
+
+      console.log("[LOCAL RECORDING] Stopped");
+    } catch (error) {
+      console.error("[LOCAL RECORDING] Failed to stop:", error);
+    }
+  }, [isRecording, socket, remoteUser]);
 
   // Clean up media/peer connection if the component unmounts mid-call
   // (e.g. logout).
@@ -947,6 +1186,9 @@ export function CallProvider({ children }) {
     callError,
     callStartedAt,
     isReconnecting,
+    isRecording,
+    remoteIsRecording,
+    showTranscriptionWarning,
     currentUserId: user?._id,
     startCall,
     acceptCall,
@@ -955,11 +1197,15 @@ export function CallProvider({ children }) {
     toggleMute,
     toggleCamera,
     toggleSpeaker, // Add speaker toggle
+    startLocalRecording,
+    stopLocalRecording,
     groupUpgrade,
     clearGroupUpgrade,
     requestAddPeople,
     addingPeople,
     remoteAudioRef, // Expose ref for UI to attach to audio/video element
+    // liveTranscriptSegments removed - transcripts are now file-based
+    // showTranscript and toggleTranscript removed
   };
 
   return <CallContext.Provider value={value}>{children}</CallContext.Provider>;

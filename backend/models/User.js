@@ -63,6 +63,16 @@ const userSchema = new mongoose.Schema(
         default: [],
       },
     ],
+
+    // Google Calendar OAuth integration
+    googleCalendar: {
+      connected: { type: Boolean, default: false },
+      accessToken: { type: String, default: null },
+      refreshToken: { type: String, default: null },
+      tokenExpiry: { type: Date, default: null },
+      email: { type: String, default: null },
+      connectedAt: { type: Date, default: null },
+    },
   },
   { timestamps: true }
 );

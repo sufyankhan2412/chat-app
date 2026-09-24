@@ -18,7 +18,8 @@ import ProfileModal from "../components/Profilemodal";
 import CallModal from "../components/CallModal";
 import GroupCallStage from "../components/GroupCallStage"
 import CallLogsPage from "../components/Calllogs";
-import JoinCallPage from "../components/JoinCallPage"
+import JoinCallPage from "../components/JoinCallPage";
+import Settings from "../components/Settings";
 
 function SocketProviderWrapper({ children }) {
   const { token, user } = useAuth();
@@ -119,6 +120,14 @@ function AppRoutes() {
         element={
           <PrivateRoute>
             <JoinCallPage />
+          </PrivateRoute>
+        }
+      />
+      <Route
+        path="/settings"
+        element={
+          <PrivateRoute>
+            <Settings />
           </PrivateRoute>
         }
       />

@@ -13,6 +13,7 @@ const userRoutes = require("./routes/Userroutes");
 const messageRoutes = require("./routes/Messageroutes");
 const callRoutes = require("./routes/Callroutes");
 const aiAgentRoutes = require("./routes/AIAgentRoutes");
+const calendarRoutes = require("./routes/CalendarRoutes");
 
 const app = express();
 const server = http.createServer(app);
@@ -63,6 +64,7 @@ app.use("/api/users", userRoutes);
 app.use("/api/messages", messageRoutes);
 app.use("/api/calls", callRoutes);
 app.use("/api/ai-agent", aiAgentRoutes);
+app.use("/api/calendar", calendarRoutes);
 
 app.get("/", (req, res) => {
   res.send("MERN Chat API is running");

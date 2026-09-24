@@ -332,6 +332,14 @@ useEffect(() => {
           <PhoneIcon width="15" height="15" />
           Calls
         </button>
+        <button
+          type="button"
+          className="sidebar-nav-item"
+          onClick={() => navigate("/settings")}
+          title="Settings"
+        >
+          ⚙️ Settings
+        </button>
       </div>
 
       <SearchUsers onContactAdded={handleContactAdded} />

@@ -101,6 +101,14 @@ export function GroupCallProvider({ children }) {
   const [speakerEnabled, setSpeakerEnabled] = useState(false);
   const [callError, setCallError] = useState("");
   const [callStartedAt, setCallStartedAt] = useState(null);
+  // Recording state
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingUsers, setRecordingUsers] = useState(new Set());
+  const mediaRecorderRef = useRef(null);
+  const recordedChunksRef = useRef([]);
+  // Transcription warning
+  const [showTranscriptionWarning, setShowTranscriptionWarning] = useState(false);
+  // Live transcription removed - transcripts are now generated as downloadable files after call ends
   // Whoever created this call link — only they can remove other
   // participants (mirrors Meet/WhatsApp's "organizer" permissions).
   const [hostId, setHostId] = useState(null);
@@ -284,6 +292,7 @@ export function GroupCallProvider({ children }) {
     lastReadMessageIdRef.current = null;
     loadingOlderChatRef.current = false;
     setLoadingOlderChat(false);
+    // Transcript state removed - transcripts are now file-based
   }, []);
 
   const getLocalMedia = useCallback(async (wantVideo) => {
@@ -506,7 +515,7 @@ export function GroupCallProvider({ children }) {
       const recorder = createPcmChunkRecorder({
         stream: recordingStream,
         chunkMs: CALL_AUDIO_CHUNK_MS,
-        onChunk: (pcmArrayBuffer, sampleRate) => {
+        onChunk: (pcmArrayBuffer, sampleRate, timing) => {
           if (!recordingRoomId) return;
           const seq = chunkSeqRef.current++;
           const uploadPromise = uploadChainRef.current
@@ -516,7 +525,8 @@ export function GroupCallProvider({ children }) {
                 joinedAt,
                 seq,
                 pcmArrayBuffer,
-                sampleRate
+                sampleRate,
+                timing
               )
             )
             .catch((err) => {
@@ -682,13 +692,9 @@ export function GroupCallProvider({ children }) {
     // Mute/unmute the WebRTC call stream (what remote users hear)
     localStreamRef.current.getAudioTracks().forEach((t) => (t.enabled = !next));
 
-    // NOTE: The recording stream (recordingStreamRef) wraps a CLONE of
-    // this same track, created in startRecording. A clone's `enabled`
-    // flag is independent per spec, so toggling it here on the original
-    // never touches the clone — recording keeps running, at full quality,
-    // even while muted. This is intentional: we want to record everything
-    // said during the call, even when the user is muted (for accurate
-    // transcription).
+    recordingStreamRef.current?.getAudioTracks().forEach((track) => {
+      track.enabled = !next;
+    });
 
     setIsMuted(next);
   }, [isMuted]);
@@ -879,6 +885,8 @@ export function GroupCallProvider({ children }) {
     socket.on("groupCallError", onGroupCallError);
     socket.on("removedFromCall", onRemovedFromCall);
 
+    // Live transcription handler removed - transcripts are now generated as files after call ends
+
     return () => {
       socket.off("groupCallJoined", onGroupCallJoined);
       socket.off("peerJoined", onPeerJoined);
@@ -887,6 +895,7 @@ export function GroupCallProvider({ children }) {
       socket.off("groupCallChatMessage", onGroupCallChatMessage);
       socket.off("groupCallError", onGroupCallError);
       socket.off("removedFromCall", onRemovedFromCall);
+      // transcription:segment listener removed
     };
   }, [socket, getOrCreatePeerConnection, cleanupPeer, resetAll, user, startRecording, stopRecordingAndFlush]);
 
@@ -936,6 +945,8 @@ export function GroupCallProvider({ children }) {
     loadingOlderChat,
     firstUnreadMessageId,
     loadOlderChatMessages,
+    // liveTranscriptSegments removed - transcripts are now file-based
+    // showTranscript and toggleTranscript removed
   };
 
   return <GroupCallContext.Provider value={value}>{children}</GroupCallContext.Provider>;

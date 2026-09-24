@@ -5,6 +5,7 @@ const Call = require("../models/Call");
 const GroupCallMessage = require("../models/Groupcallmessage");
 const { protect } = require("../middleware/Authmiddleware");
 const { uploadCallAudioChunk, saveCallAudioChunk } = require("../middleware/upload");
+const transcriptionWorker = require("../services/TranscriptionWorker");
 
 const router = express.Router();
 
@@ -225,6 +226,8 @@ router.post(
       const joinedAt = Number(req.body.joinedAt);
       const seq = Number(req.body.seq);
       const sampleRate = Number(req.body.sampleRate);
+      const startTimeMs = Number(req.body.startTimeMs);
+      const endTimeMs = Number(req.body.endTimeMs);
 
       if (
         !req.file ||
@@ -232,8 +235,11 @@ router.post(
         !Number.isInteger(seq) ||
         seq < 0 ||
         !Number.isFinite(sampleRate) ||
-        sampleRate < 8000 ||
-        sampleRate > 96000 ||
+        sampleRate !== 16000 ||
+        !Number.isFinite(startTimeMs) ||
+        !Number.isFinite(endTimeMs) ||
+        startTimeMs < 0 ||
+        endTimeMs < startTimeMs ||
         req.file.buffer.length % 2 !== 0
       ) {
         return res.status(400).json({ message: "Missing audio chunk, joinedAt, or seq" });
@@ -250,6 +256,18 @@ router.post(
       }
 
       saveCallAudioChunk(roomId, req.user._id, joinedAt, seq, req.file.buffer, sampleRate);
+
+      // The browser sends only VAD-positive speech chunks. Queue the chunk
+      // without making the HTTP request wait for Groq or MongoDB.
+      void transcriptionWorker.addAudioChunk({
+        roomId,
+        userId: String(req.user._id),
+        joinedAtMs: joinedAt,
+        seq,
+        pcmBuffer: req.file.buffer,
+        sampleRate,
+        timestamp: { startTimeMs, endTimeMs },
+      });
 
       // Diagnostic log requested for the recording pipeline: pairs with
       // the frontend's "[audio-chunk:upload]" log so a bad recording can
@@ -325,6 +343,40 @@ router.get("/:roomId/transcript", protect, async (req, res) => {
     }
 
     res.download(call.transcript.txtPath, `call-transcript-${req.params.roomId}.txt`);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
+});
+
+// @route  GET /api/calls/:roomId/action-items
+// Get AI-extracted action items for a call
+router.get("/:roomId/action-items", protect, async (req, res) => {
+  try {
+    const call = await Call.findOne({ roomId: req.params.roomId }).select(
+      "participants transcript.actionItems transcript.keyDecisions transcript.nextSteps transcript.summary transcript.status"
+    );
+    
+    if (!call) return res.status(404).json({ message: "Call not found" });
+
+    const wasParticipant = call.participants.some(
+      (p) => String(p.user) === String(req.user._id)
+    );
+    if (!wasParticipant) {
+      return res.status(403).json({ message: "You weren't part of this call" });
+    }
+
+    if (call.transcript?.status !== "completed") {
+      return res.status(409).json({ 
+        message: `Transcript is ${call.transcript?.status || "not_started"}. Action items not yet available.` 
+      });
+    }
+
+    res.json({
+      actionItems: call.transcript.actionItems || [],
+      keyDecisions: call.transcript.keyDecisions || [],
+      nextSteps: call.transcript.nextSteps || [],
+      summary: call.transcript.summary || null
+    });
   } catch (err) {
     res.status(500).json({ message: err.message });
   }

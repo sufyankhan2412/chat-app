@@ -1,0 +1,78 @@
+.live-transcript {
+  position: absolute;
+  bottom: 80px;
+  left: 20px;
+  right: 20px;
+  max-height: 300px;
+  overflow-y: auto;
+  background: rgba(0, 0, 0, 0.85);
+  border-radius: 12px;
+  padding: 16px;
+  color: white;
+  font-size: 14px;
+  z-index: 10;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+}
+
+.live-transcript-empty {
+  text-align: center;
+  color: rgba(255, 255, 255, 0.6);
+  padding: 20px;
+  font-style: italic;
+}
+
+.transcript-segment {
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.transcript-segment:last-child {
+  border-bottom: none;
+  margin-bottom: 0;
+  padding-bottom: 0;
+}
+
+.transcript-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.transcript-speaker {
+  font-weight: 600;
+  color: #60a5fa;
+  font-size: 13px;
+}
+
+.transcript-time {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.5);
+  font-family: "Courier New", monospace;
+}
+
+.transcript-text {
+  color: rgba(255, 255, 255, 0.95);
+  line-height: 1.5;
+  word-wrap: break-word;
+}
+
+.live-transcript::-webkit-scrollbar {
+  width: 6px;
+}
+
+.live-transcript::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+}
+
+.live-transcript::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.3);
+  border-radius: 3px;
+}
+
+.live-transcript::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.5);
+}

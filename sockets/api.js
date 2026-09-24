@@ -145,7 +145,7 @@ export const getGroupCallChatHistory = (roomId, params = {}) =>
 // 48000, since some hardware/OS combinations don't honor that request),
 // needed by the backend to correctly wrap the raw PCM bytes into a WAV
 // file once all of this session's chunks are combined.
-export const uploadCallAudioChunk = (roomId, joinedAt, seq, pcmArrayBuffer, sampleRate) => {
+export const uploadCallAudioChunk = (roomId, joinedAt, seq, pcmArrayBuffer, sampleRate, timing = {}) => {
   const formData = new FormData();
   formData.append("joinedAt", joinedAt);
   // `seq` is this join session's chunk ordinal (0, 1, 2, ...), assigned
@@ -155,6 +155,8 @@ export const uploadCallAudioChunk = (roomId, joinedAt, seq, pcmArrayBuffer, samp
   // arrival order.
   formData.append("seq", seq);
   formData.append("sampleRate", sampleRate);
+  formData.append("startTimeMs", timing.startTimeMs ?? 0);
+  formData.append("endTimeMs", timing.endTimeMs ?? 0);
   formData.append(
     "chunk",
     new Blob([pcmArrayBuffer], { type: "application/octet-stream" }),
@@ -188,5 +190,27 @@ export const getTranscriptStatus = (roomId) =>
 // a download via URL.createObjectURL.
 export const downloadTranscript = (roomId) =>
   api.get(`/calls/${roomId}/transcript`, { responseType: "blob" });
+
+// Fetch AI-extracted action items for a call
+export const getActionItems = (roomId) =>
+  api.get(`/calls/${roomId}/action-items`);
+
+// ---- Google Calendar Integration ----
+
+// Get calendar connection status
+export const getCalendarStatus = () =>
+  api.get('/calendar/status');
+
+// Get authorization URL to connect calendar
+export const getCalendarConnectUrl = () =>
+  api.get('/calendar/connect');
+
+// Disconnect Google Calendar
+export const disconnectCalendar = () =>
+  api.post('/calendar/disconnect');
+
+// Sync action items from a call to Google Calendar
+export const syncToCalendar = (roomId) =>
+  api.post(`/calendar/sync/${roomId}`);
 
 export default api;

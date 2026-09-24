@@ -3,6 +3,7 @@ import { useCall, CALL_STATE } from "../context/Callcontext";
 import { useGroupCall } from "../context/GroupCallContext";
 import { resolveAvatarUrl } from "../utils/avatar";
 import { attachStreamAndPlay, registerAutoplayUnlock } from "../utils/mediaPlayback";
+// LiveTranscript import removed - transcripts are now file-based
 
 // Simple line-style call icons drawn to match the app's existing icon set
 // (see ChatWindow.jsx's back/menu icons) — plain currentColor strokes,
@@ -106,6 +107,35 @@ function SpeakerOnIcon(props) {
   );
 }
 
+// Transcript icon
+function TranscriptIcon(props) {
+  return (
+    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <polyline points="14 2 14 8 20 8" />
+      <line x1="16" y1="13" x2="8" y2="13" />
+      <line x1="16" y1="17" x2="8" y2="17" />
+      <polyline points="10 9 9 9 8 9" />
+    </svg>
+  );
+}
+
+function RecordIcon(props) {
+  return (
+    <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" {...props}>
+      <circle cx="12" cy="12" r="8" />
+    </svg>
+  );
+}
+
+function StopRecordIcon(props) {
+  return (
+    <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" {...props}>
+      <rect x="6" y="6" width="12" height="12" rx="2" />
+    </svg>
+  );
+}
+
 function formatDuration(ms) {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
   const h = Math.floor(totalSeconds / 3600);
@@ -129,17 +159,23 @@ export default function CallModal() {
     callError,
     callStartedAt,
     isReconnecting,
+    isRecording,
+    remoteIsRecording,
+    showTranscriptionWarning,
     acceptCall,
     rejectCall,
     endCall,
     toggleMute,
     toggleCamera,
     toggleSpeaker, // Speaker toggle (GPT-5.6-Luna)
+    startLocalRecording,
+    stopLocalRecording,
+    requestAddPeople,
+    addingPeople,
     remoteAudioRef: contextRemoteAudioRef, // Get ref from context
     groupUpgrade,
     clearGroupUpgrade,
-    requestAddPeople,
-    addingPeople,
+    // liveTranscriptSegments, showTranscript, toggleTranscript removed
   } = useCall();
   const groupCall = useGroupCall();
 
@@ -321,6 +357,23 @@ export default function CallModal() {
         {callState === CALL_STATE.ONGOING && callError && (
           <span className="call-inline-error">{callError}</span>
         )}
+        
+        {/* Transcription Warning */}
+        {showTranscriptionWarning && (
+          <div className="call-transcription-warning">
+            ⚠️ This call is being transcribed
+          </div>
+        )}
+        
+        {/* Recording Indicators */}
+        {(isRecording || remoteIsRecording) && callState === CALL_STATE.ONGOING && (
+          <div className="call-recording-indicator">
+            <span className="recording-dot"></span>
+            {isRecording && remoteIsRecording ? "Both users are recording" 
+              : isRecording ? "You are recording" 
+              : "Other user is recording"}
+          </div>
+        )}
       </div>
 
       <div className="call-controls">
@@ -375,6 +428,17 @@ export default function CallModal() {
                 {speakerEnabled ? <SpeakerOnIcon /> : <SpeakerOffIcon />}
               </button>
             )}
+            {/* Transcript toggle button removed - transcripts are now file-based */}
+            {callState === CALL_STATE.ONGOING && (
+              <button
+                type="button"
+                className={`call-btn call-btn-secondary ${isRecording ? "call-btn-recording" : ""}`}
+                onClick={isRecording ? stopLocalRecording : startLocalRecording}
+                title={isRecording ? "Stop recording" : "Start recording (saves to your device)"}
+              >
+                {isRecording ? <StopRecordIcon /> : <RecordIcon />}
+              </button>
+            )}
             {callState === CALL_STATE.ONGOING && (
               <button
                 type="button"
@@ -397,6 +461,8 @@ export default function CallModal() {
           </>
         )}
       </div>
+
+      {/* Live transcript overlay removed - transcripts are now file-based and downloadable after call ends */}
     </div>
   );
 }

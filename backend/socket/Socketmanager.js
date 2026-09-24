@@ -8,9 +8,10 @@ const Contact = require("../models/Contact");
 const Call = require("../models/Call");
 const GroupCallMessage = require("../models/Groupcallmessage");
 const CallChatReadState = require("../models/Callchatreadstate");
-const { enqueueGroupCallTranscription } = require("../services/Transcriptionservice");
 const { callAudioDir } = require("../middleware/upload");
 const activeCallRegistry = require("../services/activeCallRegistry");
+const transcriptionWorker = require("../services/TranscriptionWorker");
+const transcriptFileGenerator = require("../services/TranscriptFileGenerator");
 
 // Before kicking off transcription for a room, wait for its chunk
 // uploads to actually go QUIET rather than guessing a fixed delay.
@@ -206,11 +207,36 @@ function waitForAudioUploadsToSettle(roomId, expectedSessions = []) {
   });
 }
 
-function scheduleTranscription(roomId, io, expectedSessions = []) {
-  waitForAudioUploadsToSettle(roomId, expectedSessions).then(() => {
-    recordingFlushAcks.delete(roomId);
-    enqueueGroupCallTranscription(roomId, io);
-  });
+async function scheduleTranscription(roomId, io, expectedSessions = []) {
+  recordingFlushAcks.delete(roomId);
+  
+  // Wait for audio uploads to settle before generating transcript
+  await waitForAudioUploadsToSettle(roomId, expectedSessions);
+  
+  console.log('[Socketmanager] Audio uploads settled, generating transcript file for room:', roomId);
+  
+  // Generate the final .txt transcript file from MongoDB segments
+  // This runs asynchronously - we don't block call cleanup on it
+  transcriptFileGenerator.finalizeTranscript(roomId)
+    .then((result) => {
+      if (result.success) {
+        console.log('[Socketmanager] Transcript file generated successfully:', {
+          roomId,
+          txtPath: result.txtPath
+        });
+      } else {
+        console.error('[Socketmanager] Transcript file generation failed:', {
+          roomId,
+          error: result.error
+        });
+      }
+    })
+    .catch((error) => {
+      console.error('[Socketmanager] Transcript finalization error:', {
+        roomId,
+        error: error.message
+      });
+    });
 }
 
 // In-memory map of userId -> Set<socketId> for currently connected users
@@ -360,6 +386,16 @@ async function startDirectCallRecording(io, meta) {
     const payload = { roomId: call.roomId, joinedAt: joinedAt.getTime() };
     io.to(getUserRoomName(meta.callerId)).emit("callSessionStarted", payload);
     io.to(getUserRoomName(meta.calleeId)).emit("callSessionStarted", payload);
+
+    for (const participant of call.participants) {
+      transcriptionWorker.startSession({
+        roomId: call.roomId,
+        userId: String(participant.user),
+        joinedAtMs: joinedAt.getTime(),
+        callStartedAt: call.startedAt.getTime(),
+        io,
+      });
+    }
   } catch (err) {
     console.error("startDirectCallRecording error:", err.message);
   }
@@ -393,6 +429,7 @@ function finalizeDirectCallRecording(io, meta) {
     }
   )
     .then(() => {
+      void transcriptionWorker.endRoom(roomId);
       // Both sides share the same joinedAt (recordingJoinedAtMs) for a
       // direct call, so their session keys differ only by userId.
       scheduleTranscription(roomId, io, [
@@ -587,6 +624,21 @@ try {
       }
     });
 
+    // ---- Recording status (notify participants when someone starts/stops recording) ----
+    socket.on("recordingStatus", ({ targetId, isRecording, roomId }) => {
+      if (roomId) {
+        // Group call - broadcast to all participants
+        socket.to(getGroupCallRoomName(roomId)).emit("peerRecordingStatus", {
+          userId: userId,
+          isRecording
+        });
+      } else if (targetId) {
+        // 1:1 call - notify specific user
+        const targetRoom = getUserRoomName(targetId);
+        io.to(targetRoom).emit("remoteRecordingStatus", { isRecording });
+      }
+    });
+
     // ---- Typing indicator ----
     socket.on("typing", ({ receiverId }) => {
       const receiverRoom = getUserRoomName(receiverId);
@@ -612,12 +664,18 @@ try {
     // per-session rather than per-user. Older clients that don't send
     // joinedAt are simply ignored here; the quiet-time poll in
     // waitForAudioUploadsToSettle still covers them as a fallback.
-    socket.on("recordingFlushed", ({ roomId, joinedAt, lastSeq }) => {
+    socket.on("recordingFlushed", async ({ roomId, joinedAt, lastSeq }) => {
       if (!roomId || !Number.isFinite(joinedAt) || !Number.isInteger(lastSeq) || lastSeq < -1) return;
       if (!recordingFlushAcks.has(roomId)) {
         recordingFlushAcks.set(roomId, new Map());
       }
       recordingFlushAcks.get(roomId).set(`${userKey}:${joinedAt}`, lastSeq);
+
+      await transcriptionWorker.endSession({
+        roomId,
+        userId: String(userId),
+        joinedAtMs: joinedAt,
+      });
     });
 
     // ---- WebRTC call signaling (1:1 audio/video calls) ----
@@ -645,6 +703,12 @@ try {
         });
         return;
       }
+
+      // Notify both users that transcription will happen
+      const callerRoom = getUserRoomName(userId);
+      const receiverRoom = getUserRoomName(receiverId);
+      io.to(callerRoom).emit("transcriptionNotice");
+      io.to(receiverRoom).emit("transcriptionNotice");
 
       activeCalls.set(userKey, String(receiverId));
       activeCalls.set(String(receiverId), userKey);
@@ -1082,10 +1146,22 @@ try {
             : null,
         });
 
+        // Notify this user about transcription
+        socket.emit("transcriptionNotice");
+
         socket.to(getGroupCallRoomName(roomId)).emit("peerJoined", {
           roomId,
           peerId: userId,
           mode,
+        });
+
+        socket.data.transcriptionJoinedAt = joinedAt.getTime();
+        transcriptionWorker.startSession({
+          roomId,
+          userId: String(userId),
+          joinedAtMs: joinedAt.getTime(),
+          callStartedAt: call.startedAt.getTime(),
+          io,
         });
       } catch (err) {
         console.error("joinCallRoom error:", err.message);
@@ -1238,6 +1314,13 @@ try {
           );
         }
 
+        const targetSocket = io.sockets.sockets.get(targetSocketId);
+        await transcriptionWorker.endSession({
+          roomId,
+          userId: targetKey,
+          joinedAtMs: targetSocket?.data.transcriptionJoinedAt || targetEntry?.joinedAt?.getTime(),
+        });
+
         if (roomNowEmpty) {
           // Every join session (userId + joinedAt) that was EVER part of
           // this room — one per participants[] entry — is what
@@ -1259,10 +1342,10 @@ try {
           peerId: targetKey,
         });
 
-        const targetSocket = io.sockets.sockets.get(targetSocketId);
         if (targetSocket) {
           targetSocket.leave(getGroupCallRoomName(roomId));
           targetSocket.data.activeCallRoom = null;
+          targetSocket.data.transcriptionJoinedAt = null;
         }
       } catch (err) {
         console.error("removeParticipant error:", err.message);
@@ -1334,6 +1417,13 @@ try {
       } catch (err) {
         console.error("leaveGroupCallRoom error:", err.message);
       }
+
+      await transcriptionWorker.endSession({
+        roomId,
+        userId: String(userId),
+        joinedAtMs: socket.data.transcriptionJoinedAt,
+      });
+      socket.data.transcriptionJoinedAt = null;
 
       socket.to(getGroupCallRoomName(roomId)).emit("peerLeft", {
         roomId,

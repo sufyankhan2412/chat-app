@@ -66,6 +66,19 @@ const callSchema = new mongoose.Schema(
       missingParticipants: [{ type: String }],
       error: { type: String, default: null },
       completedAt: { type: Date, default: null },
+      
+      // AI-extracted action items (using Groq LLM after transcription)
+      actionItems: [{
+        task: { type: String, required: true },
+        owner: { type: String, default: 'Not specified' },
+        deadline: { type: String, default: 'Not specified' },
+        priority: { type: String, enum: ['High', 'Medium', 'Low'], default: 'Medium' },
+        context: { type: String, default: '' },
+        calendarLink: { type: String, default: null }
+      }],
+      keyDecisions: [{ type: String }],
+      nextSteps: [{ type: String }],
+      summary: { type: String, default: null }
     },
   },
   { timestamps: true }

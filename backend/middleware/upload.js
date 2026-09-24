@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 const multer = require("multer");
+const transcriptionWorker = require("../services/TranscriptionWorker");
 
 // backend/uploads/avatars — created automatically if it doesn't exist yet
 const avatarsDir = path.join(__dirname, "..", "uploads", "avatars");
@@ -206,6 +207,16 @@ function saveCallAudioChunk(roomId, userId, joinedAtMs, seq, buffer, sampleRate)
   if (stat.size !== buffer.length) {
     console.error(`[audio-chunk:size-mismatch!] Expected ${buffer.length} bytes, but file on disk is ${stat.size} bytes`);
   }
+
+  // Feed chunk to live transcription worker
+  transcriptionWorker.addAudioChunk(filePath, {
+    roomId: String(roomId),
+    userId: String(userId),
+    joinedAtMs: Number(joinedAtMs),
+    seq: Number(seq),
+    buffer,
+    sampleRate: Number(sampleRate),
+  });
 
   // One small sidecar file per join session recording the sample rate —
   // overwritten on every chunk (cheap; a handful of bytes), so it's

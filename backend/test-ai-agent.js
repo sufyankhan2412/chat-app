@@ -1,121 +1,152 @@
 /**
- * Test script to call GPT-5.6-Luna and get instructions
- * Run with: node test-ai-agent.js
+ * Test Script for AI Action Item Extraction
+ * 
+ * Tests the Groq LLM-powered action item extraction from transcripts.
+ * 
+ * Usage:
+ *   node test-ai-agent.js
  */
 
+require('dotenv').config();
 const aiAgentService = require('./services/AIAgentService');
-const fs = require('fs').promises;
-const path = require('path');
 
-async function testAIAgent() {
-  console.log('🤖 Testing GPT-5.6-Luna Connection via Experiential Gateway...\n');
+// Sample meeting transcript for testing
+const SAMPLE_TRANSCRIPT = `
+[00:00:04 - 00:00:07] Sufyan Khan:
+We need to finish this project today.
 
-  // Test 1: Simple connection test
-  console.log('📡 Test 1: Testing API connection...');
-  const connectionTest = await aiAgentService.testConnection();
-  
-  if (connectionTest.success) {
-    console.log('✅ Connection successful!');
-    console.log('📝 Response:', connectionTest.message);
-    console.log('📊 Token usage:', connectionTest.usage);
-    console.log('🤖 Model:', connectionTest.model);
-  } else {
-    console.log('❌ Connection failed:', connectionTest.error);
-    return;
-  }
+[00:00:08 - 00:00:11] Ahmed Ali:
+Yes, I'll work on the backend.
 
-  console.log('\n' + '='.repeat(80) + '\n');
+[00:00:12 - 00:00:15] Sufyan Khan:
+Okay, let's continue. Can you deploy the API changes by end of day?
 
-  // Test 2: Get instructions for the actual task
-  console.log('📡 Test 2: Getting instructions from GPT-5.6-Luna...\n');
+[00:00:16 - 00:00:20] Ahmed Ali:
+Absolutely. I'll push the changes tonight and deploy to production.
 
-  try {
-    // Read relevant files
-    const filesToRead = [
-      'socket/Socketmanager.js',
-    ];
+[00:00:21 - 00:00:27] Sufyan Khan:
+Perfect. I'll review the frontend code and update the documentation by tomorrow morning.
 
-    const files = [];
-    for (const filePath of filesToRead) {
-      try {
-        const fullPath = path.join(__dirname, filePath);
-        const content = await fs.readFile(fullPath, 'utf-8');
-        files.push({ 
-          path: filePath, 
-          content: content.substring(0, 3000) // Limit to first 3000 chars for API limits
-        });
-        console.log(`✅ Read file: ${filePath} (${content.length} chars)`);
-      } catch (err) {
-        console.log(`⚠️  Could not read ${filePath}: ${err.message}`);
-      }
-    }
+[00:00:28 - 00:00:33] Ahmed Ali:
+Sounds good. We should schedule a client demo for next Friday to showcase the new features.
 
-    const task = `
-REQUIREMENTS:
+[00:00:34 - 00:00:39] Sufyan Khan:
+Great idea. I'll send out the calendar invite today. This is a high priority.
 
-1. **Speaker Mode Control for Audio/Video Calls:**
-   - Currently: Audio/video calls automatically use speaker mode (loud speaker)
-   - Required: By default, audio should play through earpiece (not speaker)
-   - User should be able to toggle speaker on/off intentionally
-   - This applies to both 1-to-1 calls and group calls
+[00:00:40 - 00:00:45] Ahmed Ali:
+Also, can you check the database backup script? It failed last night.
 
-2. **Call End Behavior Bug Fix:**
-   - Currently: In 1-to-1 calls, when one person ends the call, the other person must also click "End Call"
-   - Required: In 1-to-1 calls, when one person ends the call, it should automatically end for both parties
-   - Group Calls: Should only end when the last participant leaves. Individual exits should only remove that person.
-
-3. **Implementation Notes:**
-   - This is a WebRTC-based calling system
-   - Socket.IO handles signaling
-   - Need to handle both frontend UI state and backend socket events
-   - Consider mobile browser audio routing APIs
+[00:00:46 - 00:00:50] Sufyan Khan:
+Will do. I'll investigate and fix it this afternoon.
 `;
 
-    const context = `This is a MERN stack real-time chat application with WebRTC calling:
-- Backend: Node.js, Express, Socket.IO, MongoDB
-- Frontend: React with Socket.IO client
-- WebRTC for peer-to-peer audio/video
-- Real-time signaling via Socket.IO
-- Supports 1-to-1 calls and group calls with meeting links`;
-
-    const result = await aiAgentService.getInstructions({
-      task,
-      context,
-      files
-    });
-
-    if (result.success) {
-      console.log('\n✅ Instructions received from GPT-5.6-Luna:\n');
-      console.log('='.repeat(80));
-      console.log(result.instructions);
-      console.log('='.repeat(80));
-      console.log('\n📊 Token usage:', result.usage);
-      console.log('🤖 Model:', result.model);
-      console.log('⏰ Timestamp:', result.timestamp);
-
-      // Save instructions to a file
-      const outputPath = path.join(__dirname, 'ai-instructions.txt');
-      await fs.writeFile(outputPath, `
-GPT-5.6-Luna Instructions
-Generated: ${result.timestamp}
-Model: ${result.model}
-Token Usage: ${JSON.stringify(result.usage, null, 2)}
-
-${'='.repeat(80)}
-
-${result.instructions}
-
-${'='.repeat(80)}
-`, 'utf-8');
-      console.log(`\n💾 Instructions saved to: ${outputPath}`);
-    } else {
-      console.log('❌ Failed to get instructions:', result.error);
+async function testActionItemExtraction() {
+  console.log('\n=== Testing AI Action Item Extraction ===\n');
+  
+  // Check if Groq API is configured
+  if (!aiAgentService.isAvailable()) {
+    console.error('❌ GROQ_API_KEY is not configured in .env file');
+    process.exit(1);
+  }
+  
+  const config = aiAgentService.getConfig();
+  console.log('Configuration:');
+  console.log(`  Model: ${config.model}`);
+  console.log(`  Configured: ${config.isConfigured}`);
+  console.log(`  Timeout: ${config.timeout}ms\n`);
+  
+  console.log('Sample Transcript:');
+  console.log('--------------------------------------------------');
+  console.log(SAMPLE_TRANSCRIPT);
+  console.log('--------------------------------------------------\n');
+  
+  console.log('Extracting action items using Groq LLM...\n');
+  
+  const startTime = Date.now();
+  const result = await aiAgentService.extractActionItems(SAMPLE_TRANSCRIPT);
+  const elapsed = Date.now() - startTime;
+  
+  if (result.success) {
+    console.log('✅ Extraction successful!\n');
+    console.log(`Processing time: ${elapsed}ms\n`);
+    
+    console.log('=== EXTRACTED ANALYSIS ===\n');
+    
+    if (result.analysis.summary) {
+      console.log('📝 MEETING SUMMARY:');
+      console.log(result.analysis.summary);
+      console.log('');
     }
-
-  } catch (error) {
-    console.error('❌ Error:', error.message);
+    
+    if (result.analysis.actionItems && result.analysis.actionItems.length > 0) {
+      console.log(`📋 ACTION ITEMS (${result.analysis.actionItems.length}):`);
+      console.log('');
+      
+      result.analysis.actionItems.forEach((item, index) => {
+        const priorityEmoji = item.priority === 'High' ? '🔴' : item.priority === 'Medium' ? '🟡' : '🟢';
+        console.log(`${index + 1}. ${priorityEmoji} ${item.task}`);
+        console.log(`   👤 Owner: ${item.owner}`);
+        console.log(`   ⏰ Deadline: ${item.deadline}`);
+        console.log(`   ⭐ Priority: ${item.priority}`);
+        if (item.context) {
+          console.log(`   💬 Context: ${item.context}`);
+        }
+        
+        // Test calendar link generation
+        const calendarLink = aiAgentService.generateCalendarLink(item);
+        console.log(`   📅 Calendar: ${calendarLink.substring(0, 80)}...`);
+        console.log('');
+      });
+    }
+    
+    if (result.analysis.keyDecisions && result.analysis.keyDecisions.length > 0) {
+      console.log('💡 KEY DECISIONS:');
+      result.analysis.keyDecisions.forEach(decision => {
+        console.log(`  • ${decision}`);
+      });
+      console.log('');
+    }
+    
+    if (result.analysis.nextSteps && result.analysis.nextSteps.length > 0) {
+      console.log('➡️  NEXT STEPS:');
+      result.analysis.nextSteps.forEach(step => {
+        console.log(`  • ${step}`);
+      });
+      console.log('');
+    }
+    
+    // Test summary generation
+    console.log('=== GENERATED SUMMARY ===\n');
+    const summary = aiAgentService.generateActionItemSummary(result.analysis);
+    console.log(summary);
+    console.log('');
+    
+    console.log('=== METADATA ===');
+    console.log(`Model: ${result.metadata.model}`);
+    console.log(`Processing Time: ${result.metadata.processingTimeMs}ms`);
+    console.log(`Transcript Length: ${result.metadata.transcriptLength} chars`);
+    console.log(`Extracted At: ${result.metadata.extractedAt.toISOString()}`);
+    console.log('');
+    
+    console.log('🎉 All tests passed!\n');
+    process.exit(0);
+  } else {
+    console.log('❌ Extraction failed');
+    console.log(`Error: ${result.error}\n`);
+    
+    console.log('Fallback analysis:');
+    console.log(JSON.stringify(result.analysis, null, 2));
+    console.log('');
+    
+    process.exit(1);
   }
 }
 
-// Run the test
-testAIAgent().catch(console.error);
+// Run test
+console.log('AI Agent Service Test');
+console.log('====================\n');
+
+testActionItemExtraction().catch(error => {
+  console.error('\n❌ Test error:', error);
+  process.exit(1);
+});

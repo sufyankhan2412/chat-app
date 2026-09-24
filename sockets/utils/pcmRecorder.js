@@ -1,48 +1,45 @@
-// Shared between Callcontext.jsx (1:1 calls) and GroupCallContext.jsx
+// Captures the local WebRTC microphone track and emits only speech.
 
-export const CALL_AUDIO_CHUNK_MS = 10000;
+export const CALL_AUDIO_CHUNK_MS = 8000;
 
 export const CALL_AUDIO_CONSTRAINTS = {
   echoCancellation: true,
-  // Turned back OFF. These were briefly set to `true` on the theory that
-  // it would make the recorded/transcribed audio cleaner. In practice
-  // this constraint applies to the ONE getUserMedia() stream that is used
-  // for BOTH the LIVE call (sent straight to the peer connection) and the
-  // recording (a cloned track of that same stream — see startRecording in
-  // Callcontext.jsx / GroupCallContext.jsx). Chromium's built-in noise
-  // suppression is a spectral-subtraction/Wiener-style filter, and it is
-  // a well-known source of "robotic"/pulsing/musical-noise artifacts —
-  // most audible specifically in a quiet room, because there the
-  // suppressor is processing near-silence and its own processing
-  // artifacts become the dominant thing anyone hears, live, on the other
-  // end of the call. autoGainControl has a similar failure mode
-  // ("pumping" — audible level changes as it hunts for a target loudness)
-  // that's most noticeable exactly when there's little real signal to
-  // lock onto.
-  //
-  // Turning these off fixes the live-call quality regression at zero
-  // cost to transcription: the backend's own dedicated, tunable
-  // noise-reduction chain (see transcriptionService.js's convertToWav —
-  // highpass, afftdn, silenceremove, anlmdn, compand, loudnorm, all
-  // tuned specifically for Whisper) already handles cleaning up the
-  // RECORDED copy after the fact. There's no reason to pay the "robotic
-  // background noise" cost on the LIVE audio a second time for a benefit
-  // the backend already provides downstream.
-  noiseSuppression: false,
-  autoGainControl: false,
+  noiseSuppression: true,
+  autoGainControl: true,
   channelCount: 1,
   sampleRate: 48000,
   sampleSize: 16,
 };
 
-function floatTo16BitPCM(float32Array) {
-  const buffer = new ArrayBuffer(float32Array.length * 2);
+const TARGET_SAMPLE_RATE = 16000;
+const VAD_FRAME_MS = 20;
+const VAD_SPEECH_RMS = 0.012;
+const VAD_END_SILENCE_MS = 500;
+const VAD_PREROLL_MS = 200;
+
+function floatTo16BitPCM(samples) {
+  const buffer = new ArrayBuffer(samples.length * 2);
   const view = new DataView(buffer);
-  for (let index = 0; index < float32Array.length; index++) {
-    const sample = Math.max(-1, Math.min(1, float32Array[index]));
+  samples.forEach((value, index) => {
+    const sample = Math.max(-1, Math.min(1, value));
     view.setInt16(index * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
-  }
+  });
   return buffer;
+}
+
+function resampleTo16k(samples, sourceRate) {
+  if (sourceRate === TARGET_SAMPLE_RATE) return samples;
+  const outputLength = Math.max(1, Math.round(samples.length * TARGET_SAMPLE_RATE / sourceRate));
+  const output = new Float32Array(outputLength);
+  const ratio = sourceRate / TARGET_SAMPLE_RATE;
+  for (let index = 0; index < outputLength; index += 1) {
+    const position = index * ratio;
+    const left = Math.floor(position);
+    const right = Math.min(left + 1, samples.length - 1);
+    const weight = position - left;
+    output[index] = samples[left] * (1 - weight) + samples[right] * weight;
+  }
+  return output;
 }
 
 const WORKLET_SOURCE = `
@@ -51,15 +48,11 @@ class PcmCaptureProcessor extends AudioWorkletProcessor {
     super();
     this.buffer = new Float32Array(4096);
     this.writeIndex = 0;
-    this.port.onmessage = (event) => {
-      if (event.data?.type === "flush") this.flush();
-    };
+    this.port.onmessage = (event) => { if (event.data?.type === "flush") this.flush(); };
   }
-
   process(inputs) {
     const samples = inputs[0]?.[0];
     if (!samples?.length) return true;
-
     let offset = 0;
     while (offset < samples.length) {
       const count = Math.min(samples.length - offset, this.buffer.length - this.writeIndex);
@@ -74,9 +67,8 @@ class PcmCaptureProcessor extends AudioWorkletProcessor {
     }
     return true;
   }
-
   flush() {
-    if (this.writeIndex > 0) {
+    if (this.writeIndex) {
       const partial = this.buffer.slice(0, this.writeIndex);
       this.port.postMessage(partial, [partial.buffer]);
       this.buffer = new Float32Array(4096);
@@ -88,119 +80,128 @@ class PcmCaptureProcessor extends AudioWorkletProcessor {
 registerProcessor("pcm-capture-processor", PcmCaptureProcessor);
 `;
 
-const FIXED_SAMPLE_RATE = 48000;
-
-export function createPcmChunkRecorder({ stream, chunkMs, onChunk }) {
+export function createPcmChunkRecorder({ stream, chunkMs = CALL_AUDIO_CHUNK_MS, onChunk }) {
   const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
-  if (!AudioContextCtor) {
-    throw new Error("Web Audio API is unavailable in this browser");
-  }
+  if (!AudioContextCtor) throw new Error("Web Audio API is unavailable in this browser");
 
-  const audioContext = new AudioContextCtor({
-    sampleRate: FIXED_SAMPLE_RATE,
-    latencyHint: "playback",
-  });
-  const sampleRate = audioContext.sampleRate;
+  const audioContext = new AudioContextCtor({ sampleRate: 48000, latencyHint: "interactive" });
   const sourceNode = audioContext.createMediaStreamSource(stream);
-  let processorNode = null;
-  let usesWorklet = false;
-  let flushTimer = null;
-  let suspendWatchdog = null;
+  let processorNode;
   let stopped = false;
-  let floatBuffers = [];
-  let bufferedFrames = 0;
+  let usesWorklet = false;
   let flushWaiters = [];
+  let pendingInput = [];
+  let speechFrames = [];
+  let preRollFrames = [];
+  let speechStartedAt = null;
+  let lastSpeechAt = null;
+  let captureStartedAt = 0;
+  let capturedFrames = 0;
 
-  function emitChunk() {
-    if (!bufferedFrames) return;
-    const merged = new Float32Array(bufferedFrames);
+  function emitSpeech(endAt) {
+    if (!speechFrames.length || speechStartedAt == null) return;
+    const length = speechFrames.reduce((sum, frame) => sum + frame.length, 0);
+    const merged = new Float32Array(length);
     let offset = 0;
-    for (const buffer of floatBuffers) {
-      merged.set(buffer, offset);
-      offset += buffer.length;
+    speechFrames.forEach((frame) => { merged.set(frame, offset); offset += frame.length; });
+    const startTimeMs = Math.max(0, speechStartedAt - captureStartedAt);
+    const endTimeMs = Math.max(startTimeMs, endAt - captureStartedAt);
+    onChunk(floatTo16BitPCM(resampleTo16k(merged, audioContext.sampleRate)), TARGET_SAMPLE_RATE, { startTimeMs, endTimeMs });
+    speechFrames = [];
+    preRollFrames = [];
+    speechStartedAt = null;
+    lastSpeechAt = null;
+  }
+
+  function processSamples(input) {
+    if (!input?.length || stopped) return;
+    pendingInput.push(input.slice());
+    const frameLength = Math.max(1, Math.round(audioContext.sampleRate * VAD_FRAME_MS / 1000));
+    let pendingLength = pendingInput.reduce((sum, part) => sum + part.length, 0);
+    while (pendingLength >= frameLength) {
+      const frame = new Float32Array(frameLength);
+      let copied = 0;
+      while (copied < frameLength && pendingInput.length) {
+        const part = pendingInput[0];
+        const take = Math.min(frameLength - copied, part.length);
+        frame.set(part.subarray(0, take), copied);
+        copied += take;
+        if (take === part.length) pendingInput.shift();
+        else pendingInput[0] = part.slice(take);
+      }
+      pendingLength -= frameLength;
+      const frameStart = captureStartedAt + (capturedFrames / audioContext.sampleRate) * 1000;
+      capturedFrames += frameLength;
+      const frameEnd = captureStartedAt + (capturedFrames / audioContext.sampleRate) * 1000;
+      let energy = 0;
+      for (const value of frame) energy += value * value;
+      const speaking = Math.sqrt(energy / frame.length) >= VAD_SPEECH_RMS;
+
+      if (!speechStartedAt) {
+        preRollFrames.push(frame);
+        const maxPreRoll = Math.ceil(VAD_PREROLL_MS / VAD_FRAME_MS);
+        if (preRollFrames.length > maxPreRoll) preRollFrames.shift();
+      }
+      if (speaking && !speechStartedAt) {
+        speechStartedAt = Math.max(frameStart - VAD_PREROLL_MS, captureStartedAt);
+        speechFrames = [...preRollFrames];
+      }
+      if (speechStartedAt) speechFrames.push(frame);
+      if (speaking) lastSpeechAt = frameEnd;
+      if (speechStartedAt && (frameEnd - speechStartedAt >= chunkMs || (lastSpeechAt && frameEnd - lastSpeechAt >= VAD_END_SILENCE_MS))) {
+        emitSpeech(lastSpeechAt || frameEnd);
+      }
     }
-    floatBuffers = [];
-    bufferedFrames = 0;
-    onChunk(floatTo16BitPCM(merged), sampleRate);
   }
 
-  function handleSamples(samples) {
-    if (!samples || typeof samples.slice !== "function") return;
-    const copy = samples.slice();
-    floatBuffers.push(copy);
-    bufferedFrames += copy.length;
-  }
-
-  function handleWorkletMessage(event) {
-    if (event.data?.type !== "flushed") return;
-    const waiters = flushWaiters;
-    flushWaiters = [];
-    waiters.forEach((resolve) => resolve());
+  function handleMessage(event) {
+    if (event.data?.type === "flushed") {
+      if (pendingInput.length) {
+        const remaining = pendingInput.reduce((all, part) => [...all, ...part], []);
+        pendingInput = [];
+        processSamples(new Float32Array(remaining));
+      }
+      if (speechStartedAt) emitSpeech(lastSpeechAt || performance.now());
+      const waiters = flushWaiters;
+      flushWaiters = [];
+      waiters.forEach((resolve) => resolve());
+      return;
+    }
+    const input = event.data instanceof Float32Array ? event.data : new Float32Array(event.data);
+    processSamples(input);
   }
 
   async function start() {
-    if (!stream.getAudioTracks().length) {
-      throw new Error("[pcmRecorder] Stream has no audio tracks");
-    }
+    if (!stream.getAudioTracks().length) throw new Error("[pcmRecorder] Stream has no audio tracks");
     if (audioContext.state === "suspended") await audioContext.resume();
-
-    audioContext.onstatechange = () => {
-      if (audioContext.state === "suspended" && !stopped) {
-        audioContext.resume().catch(() => {});
-      }
-    };
-    suspendWatchdog = setInterval(() => {
-      if (audioContext.state === "suspended" && !stopped) {
-        audioContext.resume().catch(() => {});
-      }
-    }, 1000);
-
+    captureStartedAt = performance.now();
     try {
       if (!audioContext.audioWorklet) throw new Error("AudioWorklet unsupported");
-      const blobUrl = URL.createObjectURL(
-        new Blob([WORKLET_SOURCE], { type: "application/javascript" })
-      );
-      try {
-        await audioContext.audioWorklet.addModule(blobUrl);
-      } finally {
-        URL.revokeObjectURL(blobUrl);
-      }
+      const url = URL.createObjectURL(new Blob([WORKLET_SOURCE], { type: "application/javascript" }));
+      try { await audioContext.audioWorklet.addModule(url); } finally { URL.revokeObjectURL(url); }
       processorNode = new AudioWorkletNode(audioContext, "pcm-capture-processor");
       usesWorklet = true;
-      processorNode.port.onmessage = (event) => {
-        if (event.data?.type === "flushed") {
-          handleWorkletMessage(event);
-        } else {
-          handleSamples(event.data);
-        }
-      };
+      processorNode.port.onmessage = handleMessage;
       sourceNode.connect(processorNode);
     } catch (error) {
       console.warn("createPcmChunkRecorder: AudioWorklet unavailable, using fallback", error);
       processorNode = audioContext.createScriptProcessor(16384, 1, 1);
-      processorNode.onaudioprocess = (event) => {
-        handleSamples(event.inputBuffer.getChannelData(0));
-      };
+      processorNode.onaudioprocess = (event) => processSamples(event.inputBuffer.getChannelData(0));
       sourceNode.connect(processorNode);
       const silentGain = audioContext.createGain();
       silentGain.gain.value = 0;
       processorNode.connect(silentGain);
       silentGain.connect(audioContext.destination);
     }
-
-    flushTimer = setInterval(emitChunk, chunkMs);
   }
 
   function flush() {
     if (!usesWorklet || !processorNode?.port) {
-      emitChunk();
+      if (speechStartedAt) emitSpeech(performance.now());
       return Promise.resolve();
     }
     return new Promise((resolve) => {
-      flushWaiters.push(() => {
-        emitChunk();
-        resolve();
-      });
+      flushWaiters.push(resolve);
       processorNode.port.postMessage({ type: "flush" });
     });
   }
@@ -208,9 +209,7 @@ export function createPcmChunkRecorder({ stream, chunkMs, onChunk }) {
   function stop() {
     if (stopped) return;
     stopped = true;
-    if (flushTimer) clearInterval(flushTimer);
-    if (suspendWatchdog) clearInterval(suspendWatchdog);
-    emitChunk();
+    if (speechStartedAt) emitSpeech(performance.now());
     sourceNode.disconnect();
     if (processorNode?.port) processorNode.port.onmessage = null;
     processorNode?.disconnect();

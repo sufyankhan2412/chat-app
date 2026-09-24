@@ -1,5 +1,10 @@
 import React, { useEffect, useState } from "react";
-import { getGroupCallLog, getTranscriptStatus, downloadTranscript } from "../api";
+import { 
+  getGroupCallLog, 
+  getTranscriptStatus, 
+  downloadTranscript, 
+  getActionItems
+} from "../api";
 import { resolveAvatarUrl } from "../utils/avatar";
 import { formatCallDuration } from "../../backend/formatCallDuration";
 import { PhoneIcon, VideoIcon } from "./Callicons";
@@ -26,6 +31,9 @@ export default function GroupCallDetailModal({ roomId, onClose }) {
   const [error, setError] = useState("");
   const [transcript, setTranscript] = useState({ status: "not_started" });
   const [downloading, setDownloading] = useState(false);
+  const [actionItems, setActionItems] = useState(null);
+  const [loadingActionItems, setLoadingActionItems] = useState(false);
+  const [showActionItems, setShowActionItems] = useState(false);
 
   useEffect(() => {
     if (!roomId) return;
@@ -92,6 +100,28 @@ export default function GroupCallDetailModal({ roomId, onClose }) {
     } finally {
       setDownloading(false);
     }
+  };
+
+  const handleViewActionItems = async () => {
+    if (actionItems) {
+      setShowActionItems(!showActionItems);
+      return;
+    }
+
+    setLoadingActionItems(true);
+    try {
+      const { data } = await getActionItems(roomId);
+      setActionItems(data);
+      setShowActionItems(true);
+    } catch (err) {
+      console.error("getActionItems error:", err);
+    } finally {
+      setLoadingActionItems(false);
+    }
+  };
+
+  const handleAddToCalendar = (calendarLink) => {
+    window.open(calendarLink, '_blank');
   };
 
   return (
@@ -162,17 +192,104 @@ export default function GroupCallDetailModal({ roomId, onClose }) {
               <div className="profile-divider" />
 
               <div className="call-detail-history gc-transcript-section">
-                <div className="call-detail-history-title">Transcript</div>
+                <div className="call-detail-history-title">Transcript & Action Items</div>
 
                 {transcript.status === "completed" && (
-                  <button
-                    type="button"
-                    className="gc-transcript-download-btn"
-                    onClick={handleDownloadTranscript}
-                    disabled={downloading}
-                  >
-                    {downloading ? "Downloading…" : "Download transcript (.txt)"}
-                  </button>
+                  <div className="gc-transcript-actions">
+                    <button
+                      type="button"
+                      className="gc-transcript-download-btn"
+                      onClick={handleDownloadTranscript}
+                      disabled={downloading}
+                    >
+                      {downloading ? "Downloading…" : "📄 Download transcript (.txt)"}
+                    </button>
+                    
+                    <button
+                      type="button"
+                      className="gc-transcript-download-btn gc-action-items-btn"
+                      onClick={handleViewActionItems}
+                      disabled={loadingActionItems}
+                    >
+                      {loadingActionItems ? "Loading…" : showActionItems ? "▼ Hide action items" : "▶ View AI action items"}
+                    </button>
+                  </div>
+                )}
+
+                {showActionItems && actionItems && (
+                  <div className="gc-action-items">
+                    <div className="gc-auto-sync-notice">
+                      ℹ️ Action items are automatically synced to Google Calendar for all participants with connected calendars.
+                    </div>
+                    
+                    {actionItems.summary && (
+                      <div className="gc-action-summary">
+                        <strong>📝 Meeting Summary:</strong>
+                        <p>{actionItems.summary}</p>
+                      </div>
+                    )}
+
+                    {actionItems.actionItems && actionItems.actionItems.length > 0 && (
+                      <div className="gc-action-list">
+                        <h4>📋 Action Items ({actionItems.actionItems.length})</h4>
+                        {actionItems.actionItems.map((item, index) => (
+                          <div key={index} className={`gc-action-item gc-priority-${item.priority.toLowerCase()}`}>
+                            <div className="gc-action-header">
+                              <span className="gc-action-priority">
+                                {item.priority === 'High' ? '🔴' : item.priority === 'Medium' ? '🟡' : '🟢'}
+                              </span>
+                              <strong>{item.task}</strong>
+                            </div>
+                            {item.owner && item.owner !== 'Not specified' && (
+                              <div className="gc-action-meta">👤 {item.owner}</div>
+                            )}
+                            {item.deadline && item.deadline !== 'Not specified' && (
+                              <div className="gc-action-meta">⏰ {item.deadline}</div>
+                            )}
+                            {item.context && (
+                              <div className="gc-action-context">{item.context}</div>
+                            )}
+                            {item.calendarLink && (
+                              <button
+                                type="button"
+                                className="gc-calendar-btn"
+                                onClick={() => handleAddToCalendar(item.calendarLink)}
+                              >
+                                📅 Add to Calendar
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {actionItems.keyDecisions && actionItems.keyDecisions.length > 0 && (
+                      <div className="gc-key-decisions">
+                        <h4>💡 Key Decisions</h4>
+                        <ul>
+                          {actionItems.keyDecisions.map((decision, index) => (
+                            <li key={index}>{decision}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {actionItems.nextSteps && actionItems.nextSteps.length > 0 && (
+                      <div className="gc-next-steps">
+                        <h4>➡️ Next Steps</h4>
+                        <ul>
+                          {actionItems.nextSteps.map((step, index) => (
+                            <li key={index}>{step}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {(!actionItems.actionItems || actionItems.actionItems.length === 0) && 
+                     (!actionItems.keyDecisions || actionItems.keyDecisions.length === 0) && (
+                      <p className="gc-transcript-note">No action items were identified in this meeting.</p>
+                    )}
+                  </div>
                 )}
 
                 {(transcript.status === "not_started" || transcript.status === "processing") && (
