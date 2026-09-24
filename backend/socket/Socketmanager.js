@@ -1026,7 +1026,7 @@ try {
           participants: [],
         });
 
-        const frontendUrl = process.env.CLIENT_URL || "http://localhost:5173";
+        const frontendUrl = process.env.CLIENT_URL || "https://chat-app-pi-green-77.vercel.app";
         const payload = {
           roomId: call.roomId,
           callType: call.callType,
