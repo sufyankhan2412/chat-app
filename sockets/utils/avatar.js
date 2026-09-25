@@ -1,6 +1,6 @@
 const API_URL = window.location.hostname.endsWith(".devtunnels.ms")
   ? import.meta.env.VITE_TUNNEL_API_URL
-  : import.meta.env.VITE_API_URL || "http://localhost:5000/api";
+  : import.meta.env.VITE_API_URL || "https://chat-app-0aam.onrender.com/api";
 
 // The API base URL points at .../api, but locally-uploaded avatars are
 // served from the server root (see backend Server.js: app.use("/uploads", ...)).
