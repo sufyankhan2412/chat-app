@@ -97,6 +97,10 @@ router.post("/upload", protect, (req, res, next) => {
   try {
     const type = req.body.type || "file";
     const duration = req.body.duration ? Number(req.body.duration) : undefined;
+    
+    // Preserve original filename (sanitized for Cloudinary)
+    const originalName = req.file.originalname;
+    const sanitizedFileName = originalName.replace(/[^a-zA-Z0-9._-]/g, '_');
 
     // Determine resource type for Cloudinary
     let resourceType = "auto";
@@ -104,16 +108,28 @@ router.post("/upload", protect, (req, res, next) => {
     else if (type === "video" || type === "voice") resourceType = "video";
     else resourceType = "raw";
 
-    // Upload to Cloudinary
+    // Upload to Cloudinary with original filename metadata
     const result = await uploadToCloudinary(req.file.buffer, {
       folder: `chat-app/attachments/${type}`,
       resourceType,
       publicId: `${req.user._id}-${Date.now()}-${Math.round(Math.random() * 1e9)}`,
+      // Store original filename in context for later retrieval
+      context: `alt=${sanitizedFileName}|caption=${originalName}`,
+      // Use the original filename when serving the file
+      use_filename: true,
+      unique_filename: true,
     });
+
+    // Construct URL with fl_attachment flag to force download with proper filename
+    let downloadUrl = result.secure_url;
+    if (type === 'file') {
+      // For file downloads, add transformation to force attachment download
+      downloadUrl = result.secure_url.replace('/upload/', `/upload/fl_attachment:${encodeURIComponent(originalName)}/`);
+    }
 
     res.status(201).json({
       attachment: {
-        url: result.secure_url,
+        url: downloadUrl,
         fileName: req.file.originalname,
         fileSize: req.file.size,
         mimeType: req.file.mimetype,

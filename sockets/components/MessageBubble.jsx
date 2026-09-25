@@ -150,8 +150,42 @@ function AttachmentContent({ message, isOwn, onOpenMedia, onMediaLoad }) {
   }
 
   if (type === "file") {
+    const handleDownload = async (e) => {
+      e.preventDefault();
+      try {
+        // For Cloudinary URLs, use the URL directly with fl_attachment flag
+        let downloadUrl = url;
+        
+        // If it's a Cloudinary URL, add the attachment flag for proper filename download
+        if (url.includes('cloudinary.com')) {
+          // Insert fl_attachment before the file path to force proper download with original filename
+          downloadUrl = url.replace('/upload/', '/upload/fl_attachment/');
+        }
+        
+        // Fetch the file as a blob
+        const response = await fetch(downloadUrl);
+        const blob = await response.blob();
+        
+        // Create a temporary download link
+        const blobUrl = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = blobUrl;
+        link.download = attachment.fileName || 'download';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        
+        // Clean up the blob URL
+        window.URL.revokeObjectURL(blobUrl);
+      } catch (error) {
+        console.error('Download failed:', error);
+        // Fallback to direct download
+        window.open(url, '_blank');
+      }
+    };
+
     return (
-      <a href={url} download={attachment.fileName} className="message-file">
+      <a href={url} onClick={handleDownload} className="message-file">
         <span className="message-file-icon">
           <FileTypeIcon fileName={attachment.fileName} />
         </span>
