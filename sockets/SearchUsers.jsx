@@ -1,6 +1,45 @@
 import React, { useState, useEffect, useRef } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import { searchUsers, addContact } from "./api";
 import { resolveAvatarUrl } from "./utils/avatar";
+
+const dropdownVariants = {
+  hidden: { 
+    opacity: 0, 
+    y: -10,
+    scale: 0.95
+  },
+  visible: { 
+    opacity: 1, 
+    y: 0,
+    scale: 1,
+    transition: {
+      type: "spring",
+      stiffness: 300,
+      damping: 25,
+      staggerChildren: 0.05
+    }
+  },
+  exit: { 
+    opacity: 0, 
+    y: -10,
+    scale: 0.95,
+    transition: { duration: 0.2 }
+  }
+};
+
+const itemVariants = {
+  hidden: { opacity: 0, x: -20 },
+  visible: { 
+    opacity: 1, 
+    x: 0,
+    transition: {
+      type: "spring",
+      stiffness: 300,
+      damping: 25
+    }
+  }
+};
 
 export default function SearchUsers({ onContactAdded }) {
   const [query, setQuery] = useState("");
@@ -59,35 +98,66 @@ export default function SearchUsers({ onContactAdded }) {
 
   return (
     <div className="search-users" ref={wrapperRef}>
-      <input
+      <motion.input
         type="text"
-        placeholder="Search users to add..."
+        placeholder="🔍 Search users to add..."
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         onFocus={() => query && setOpen(true)}
+        whileFocus={{ scale: 1.01 }}
+        transition={{ type: "spring", stiffness: 300 }}
       />
-      {open && results.length > 0 && (
-        <div className="search-dropdown">
-          {results.map((u) => (
-            <div className="search-result-item" key={u._id}>
-              <img src={resolveAvatarUrl(u.avatar)} alt={u.username} className="avatar-sm" />
-              <span className="search-username">{u.username}</span>
-              <button
-                className="add-btn"
-                disabled={addingId === u._id}
-                onClick={() => handleAdd(u)}
+      <AnimatePresence>
+        {open && results.length > 0 && (
+          <motion.div 
+            className="search-dropdown"
+            variants={dropdownVariants}
+            initial="hidden"
+            animate="visible"
+            exit="exit"
+          >
+            {results.map((u) => (
+              <motion.div 
+                className="search-result-item" 
+                key={u._id}
+                variants={itemVariants}
+                whileHover={{ 
+                  x: 4,
+                  backgroundColor: "#f0f2f5",
+                  transition: { duration: 0.2 }
+                }}
               >
-                {addingId === u._id ? "Adding..." : "Add"}
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-      {open && query && results.length === 0 && (
-        <div className="search-dropdown">
-          <div className="search-no-results">No users found</div>
-        </div>
-      )}
+                <motion.img 
+                  src={resolveAvatarUrl(u.avatar)} 
+                  alt={u.username} 
+                  className="avatar-sm"
+                  whileHover={{ scale: 1.1, rotate: 5 }}
+                />
+                <span className="search-username">{u.username}</span>
+                <motion.button
+                  className="add-btn"
+                  disabled={addingId === u._id}
+                  onClick={() => handleAdd(u)}
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                >
+                  {addingId === u._id ? "⏳" : "➕ Add"}
+                </motion.button>
+              </motion.div>
+            ))}
+          </motion.div>
+        )}
+        {open && query && results.length === 0 && (
+          <motion.div 
+            className="search-dropdown"
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+          >
+            <div className="search-no-results">🔍 No users found</div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

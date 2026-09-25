@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { motion, AnimatePresence } from "framer-motion";
 import { getContacts, getMessages } from "../api";
 import { useSocket } from "../context/Socketcontext";
 import { useAuth } from "../context/Authcontext";
@@ -291,13 +292,40 @@ useEffect(() => {
   };
 
   return (
-    <div className="sidebar">
-      <div className="sidebar-header">
-        <div className="me" onClick={() => openOwnProfile(user)} title="View profile">
-          <img src={resolveAvatarUrl(user?.avatar)} alt="me" className="avatar-sm" />
+    <motion.div 
+      className="sidebar"
+      initial={{ x: -100, opacity: 0 }}
+      animate={{ x: 0, opacity: 1 }}
+      transition={{ duration: 0.4, ease: "easeOut" }}
+    >
+      <motion.div 
+        className="sidebar-header"
+        initial={{ y: -20, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        transition={{ delay: 0.1, duration: 0.3 }}
+      >
+        <motion.div 
+          className="me" 
+          onClick={() => openOwnProfile(user)} 
+          title="View profile"
+          whileHover={{ scale: 1.05 }}
+          whileTap={{ scale: 0.98 }}
+        >
+          <motion.img 
+            src={resolveAvatarUrl(user?.avatar)} 
+            alt="me" 
+            className="avatar-sm"
+            whileHover={{ rotate: 5 }}
+          />
           <span>{user?.username}</span>
-        </div>
-        <button className="logout-btn" onClick={logout} title="Logout">
+        </motion.div>
+        <motion.button 
+          className="logout-btn" 
+          onClick={logout} 
+          title="Logout"
+          whileHover={{ scale: 1.1, rotate: 90 }}
+          whileTap={{ scale: 0.9 }}
+        >
           <svg
             viewBox="0 0 24 24"
             width="19"
@@ -312,105 +340,156 @@ useEffect(() => {
             <polyline points="16 17 21 12 16 7" />
             <line x1="21" y1="12" x2="9" y2="12" />
           </svg>
-        </button>
-      </div>
+        </motion.button>
+      </motion.div>
 
-      <div className="sidebar-nav">
-        <button
+      <motion.div 
+        className="sidebar-nav"
+        initial={{ y: -10, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        transition={{ delay: 0.2, duration: 0.3 }}
+      >
+        <motion.button
           type="button"
           className="sidebar-nav-item active"
           title="Chats"
+          whileHover={{ scale: 1.03 }}
+          whileTap={{ scale: 0.98 }}
         >
-          Chats
-        </button>
-        <button
+          💬 Chats
+        </motion.button>
+        <motion.button
           type="button"
           className="sidebar-nav-item"
           onClick={() => navigate("/calls")}
           title="Calls"
+          whileHover={{ scale: 1.03 }}
+          whileTap={{ scale: 0.98 }}
         >
           <PhoneIcon width="15" height="15" />
           Calls
-        </button>
-        <button
+        </motion.button>
+        <motion.button
           type="button"
           className="sidebar-nav-item"
           onClick={() => navigate("/settings")}
           title="Settings"
+          whileHover={{ scale: 1.03 }}
+          whileTap={{ scale: 0.98 }}
         >
           ⚙️ Settings
-        </button>
-      </div>
+        </motion.button>
+      </motion.div>
 
       <SearchUsers onContactAdded={handleContactAdded} />
 
       <div className="contact-list">
-        {contacts.length === 0 && (
-          <div className="empty-state">
-            Search for a username above to start a chat
-          </div>
-        )}
-        {contacts.map((c) => {
-          const lastMsg = c.lastMessage;
-          const isOwnLastMsg = lastMsg && String(lastMsg.sender) === String(user._id);
-          const isUnread = lastMsg && !isOwnLastMsg && lastMsg.status !== "read";
-
-          return (
-            <div
-              key={c._id}
-              className={`contact-item ${
-                activeContact?._id === c._id ? "active" : ""
-              }`}
-              onClick={() => onSelectContact(c)}
+        <AnimatePresence>
+          {contacts.length === 0 && (
+            <motion.div 
+              className="empty-state"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              transition={{ duration: 0.3 }}
             >
-              <div
-                className="avatar-wrapper"
+              Search for a username above to start a chat
+            </motion.div>
+          )}
+        </AnimatePresence>
+        
+        <AnimatePresence mode="popLayout">
+          {contacts.map((c, index) => {
+            const lastMsg = c.lastMessage;
+            const isOwnLastMsg = lastMsg && String(lastMsg.sender) === String(user._id);
+            const isUnread = lastMsg && !isOwnLastMsg && lastMsg.status !== "read";
+
+            return (
+              <motion.div
+                key={c._id}
+                className={`contact-item ${
+                  activeContact?._id === c._id ? "active" : ""
+                }`}
+                onClick={() => onSelectContact(c)}
+                initial={{ opacity: 0, x: -20 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -20 }}
+                transition={{
+                  duration: 0.3,
+                  delay: index * 0.05,
+                  ease: "easeOut"
+                }}
+                whileHover={{ 
+                  scale: 1.02,
+                  x: 4,
+                  transition: { duration: 0.2 }
+                }}
+                whileTap={{ scale: 0.98 }}
+                layout
               >
-                <img src={resolveAvatarUrl(c.avatar)} alt={c.username} className="avatar-md" />
-                <span
-                  className={`status-dot ${c.isOnline ? "online" : "offline"}`}
-                />
-              </div>
-              <div className="contact-info">
-                <div className="contact-top-row">
-                  <span className={`contact-name ${isUnread ? "unread" : ""}`}>
-                    {c.username}
-                  </span>
-                  {lastMsg && (
-                    <span className={`contact-time ${isUnread ? "unread" : ""}`}>
-                      {formatPreviewTime(lastMsg.createdAt)}
+                <motion.div
+                  className="avatar-wrapper"
+                  whileHover={{ scale: 1.1, rotate: 5 }}
+                  transition={{ type: "spring", stiffness: 300 }}
+                >
+                  <img src={resolveAvatarUrl(c.avatar)} alt={c.username} className="avatar-md" />
+                  <motion.span
+                    className={`status-dot ${c.isOnline ? "online" : "offline"}`}
+                    initial={{ scale: 0 }}
+                    animate={{ scale: 1 }}
+                    transition={{ 
+                      type: "spring", 
+                      stiffness: 500,
+                      delay: index * 0.05 + 0.2
+                    }}
+                  />
+                </motion.div>
+                <div className="contact-info">
+                  <div className="contact-top-row">
+                    <span className={`contact-name ${isUnread ? "unread" : ""}`}>
+                      {c.username}
                     </span>
-                  )}
-                </div>
-                <div className="contact-bottom-row">
-                  <span className={`contact-last-message ${isUnread ? "unread" : ""}`}>
-                    {c.isBlocked ? (
-                      <span className="contact-last-message-text contact-blocked-label">
-                        Blocked
-                      </span>
-                    ) : (
-                      <>
-                        {/* WhatsApp never shows delivery/read ticks next to
-                            a "This message was deleted" preview */}
-                        {isOwnLastMsg && !lastMsg.deletedForEveryone && (
-                          <PreviewTicks status={lastMsg.status} />
-                        )}
-                        <span
-                          className={`contact-last-message-text${
-                            lastMsg?.deletedForEveryone ? " contact-last-message-deleted" : ""
-                          }`}
-                        >
-                          {lastMsg ? previewText(lastMsg, isOwnLastMsg) : "Say hi 👋"}
-                        </span>
-                      </>
+                    {lastMsg && (
+                      <motion.span 
+                        className={`contact-time ${isUnread ? "unread" : ""}`}
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        transition={{ delay: index * 0.05 + 0.1 }}
+                      >
+                        {formatPreviewTime(lastMsg.createdAt)}
+                      </motion.span>
                     )}
-                  </span>
+                  </div>
+                  <div className="contact-bottom-row">
+                    <span className={`contact-last-message ${isUnread ? "unread" : ""}`}>
+                      {c.isBlocked ? (
+                        <span className="contact-last-message-text contact-blocked-label">
+                          🚫 Blocked
+                        </span>
+                      ) : (
+                        <>
+                          {/* WhatsApp never shows delivery/read ticks next to
+                              a "This message was deleted" preview */}
+                          {isOwnLastMsg && !lastMsg.deletedForEveryone && (
+                            <PreviewTicks status={lastMsg.status} />
+                          )}
+                          <span
+                            className={`contact-last-message-text${
+                              lastMsg?.deletedForEveryone ? " contact-last-message-deleted" : ""
+                            }`}
+                          >
+                            {lastMsg ? previewText(lastMsg, isOwnLastMsg) : "Say hi 👋"}
+                          </span>
+                        </>
+                      )}
+                    </span>
+                  </div>
                 </div>
-              </div>
-            </div>
-          );
-        })}
+              </motion.div>
+            );
+          })}
+        </AnimatePresence>
       </div>
-    </div>
+    </motion.div>
   );
 }

@@ -10,6 +10,7 @@ import { SocketProvider } from "../context/Socketcontext";
 import { CallProvider } from "../context/Callcontext";
 import { GroupCallProvider } from "../context/GroupCallContext";
 import { ProfileModalProvider } from "../context/Profilemodalcontext";
+import Home from "../components/Home";
 import Login from "../components/Login";
 import Signup from "../components/Signup";
 import Sidebar from "../components/Sidebar";
@@ -79,6 +80,7 @@ function PublicRoute({ children }) {
 function AppRoutes() {
   return (
     <Routes>
+      <Route path="/" element={<Home />} />
       <Route
         path="/login"
         element={
@@ -131,7 +133,7 @@ function AppRoutes() {
           </PrivateRoute>
         }
       />
-      <Route path="*" element={<Navigate to="/chat" />} />
+      <Route path="*" element={<Navigate to="/" />} />
     </Routes>
   );
 }

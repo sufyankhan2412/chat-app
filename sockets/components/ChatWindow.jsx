@@ -1,4 +1,5 @@
 ﻿import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import { getMessages, uploadAttachment, blockUser, unblockUser, clearChat, deleteMessage, undoDeleteMessage, starMessage, unstarMessage } from "../api";
 import { useSocket } from "../context/Socketcontext";
 import { useAuth } from "../context/Authcontext";
@@ -1079,26 +1080,48 @@ export default function ChatWindow({ contact, onBack }) {
 
   if (!contact) {
     return (
-      <div className="chat-window empty">
-        <p>Select a contact from the left to start chatting</p>
-      </div>
+      <motion.div 
+        className="chat-window empty"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.3 }}
+      >
+        <motion.p
+          initial={{ y: 20, opacity: 0 }}
+          animate={{ y: 0, opacity: 1 }}
+          transition={{ delay: 0.2, duration: 0.4 }}
+        >
+          Select a contact from the left to start chatting
+        </motion.p>
+      </motion.div>
     );
   }
 
   return (
-    <div className="chat-window">
-      <div
+    <motion.div 
+      className="chat-window"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.3 }}
+    >
+      <motion.div
         className="chat-header"
         onClick={() => openUserProfile(contact)}
         title="View contact info"
+        initial={{ y: -20, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        transition={{ duration: 0.3, ease: "easeOut" }}
+        whileHover={{ backgroundColor: "rgba(255, 255, 255, 0.05)" }}
       >
-        <button
+        <motion.button
           className="chat-back-btn"
           onClick={(e) => {
             e.stopPropagation();
             onBack?.();
           }}
           title="Back to chats"
+          whileHover={{ scale: 1.1 }}
+          whileTap={{ scale: 0.9 }}
         >
           <svg
             viewBox="0 0 24 24"
@@ -1113,8 +1136,14 @@ export default function ChatWindow({ contact, onBack }) {
             <line x1="19" y1="12" x2="5" y2="12" />
             <polyline points="12 19 5 12 12 5" />
           </svg>
-        </button>
-        <img src={resolveAvatarUrl(contact.avatar)} alt={contact.username} className="avatar-md" />
+        </motion.button>
+        <motion.img 
+          src={resolveAvatarUrl(contact.avatar)} 
+          alt={contact.username} 
+          className="avatar-md"
+          whileHover={{ scale: 1.1, rotate: 5 }}
+          transition={{ type: "spring", stiffness: 300 }}
+        />
         <div className="chat-header-info">
           <span className="chat-header-name">{contact.username}</span>
           <span className="chat-header-status">
@@ -1203,7 +1232,7 @@ export default function ChatWindow({ contact, onBack }) {
             </div>
           )}
         </div>
-      </div>
+      </motion.div>
 
       <div
         className={`messages-container${showScrollbar ? " scrollbar-visible" : ""}`}
@@ -1252,13 +1281,21 @@ export default function ChatWindow({ contact, onBack }) {
     </React.Fragment>
   );
 })}
-        {isOtherTyping && (
-          <div className="typing-indicator">
-            <span></span>
-            <span></span>
-            <span></span>
-          </div>
-        )}
+        <AnimatePresence>
+          {isOtherTyping && (
+            <motion.div 
+              className="typing-indicator"
+              initial={{ opacity: 0, scale: 0.8, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.8, y: 10 }}
+              transition={{ duration: 0.2 }}
+            >
+              <span></span>
+              <span></span>
+              <span></span>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
       {pendingFile && (
@@ -1330,74 +1367,161 @@ export default function ChatWindow({ contact, onBack }) {
         onChange={(e) => handleFilePicked(e, "file")}
       />
 
-      <form className="message-input-bar" onSubmit={handleSend}>
+      <motion.form 
+        className="message-input-bar" 
+        onSubmit={handleSend}
+        initial={{ y: 20, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        transition={{ delay: 0.2, duration: 0.3 }}
+      >
         <div className="attach-menu-wrapper" ref={attachMenuRef}>
-          <button
+          <motion.button
             type="button"
             className="icon-btn attach-btn"
             onClick={() => setIsAttachMenuOpen((v) => !v)}
             title="Attach"
             disabled={isRecording}
+            whileHover={{ scale: 1.1, rotate: 15 }}
+            whileTap={{ scale: 0.9 }}
           >
             <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
             </svg>
-          </button>
+          </motion.button>
 
-          {isAttachMenuOpen && (
-            <div className="attach-menu">
-              <button type="button" onClick={() => handleAttachOptionClick(mediaInputRef)}>
-                <span className="attach-menu-icon photo">🖼️</span> Photos &amp; Videos
-              </button>
-              <button type="button" onClick={() => handleAttachOptionClick(fileInputRef)}>
-                <span className="attach-menu-icon doc">📄</span> Document
-              </button>
-            </div>
-          )}
+          <AnimatePresence>
+            {isAttachMenuOpen && (
+              <motion.div 
+                className="attach-menu"
+                initial={{ opacity: 0, scale: 0.9, y: 10 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.9, y: 10 }}
+                transition={{ type: "spring", stiffness: 300, damping: 25 }}
+              >
+                <motion.button 
+                  type="button" 
+                  onClick={() => handleAttachOptionClick(mediaInputRef)}
+                  whileHover={{ x: 4, backgroundColor: "#f5f6f6" }}
+                  whileTap={{ scale: 0.98 }}
+                >
+                  <span className="attach-menu-icon photo">🖼️</span> Photos &amp; Videos
+                </motion.button>
+                <motion.button 
+                  type="button" 
+                  onClick={() => handleAttachOptionClick(fileInputRef)}
+                  whileHover={{ x: 4, backgroundColor: "#f5f6f6" }}
+                  whileTap={{ scale: 0.98 }}
+                >
+                  <span className="attach-menu-icon doc">📄</span> Document
+                </motion.button>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
 
-        {isRecording ? (
-          <div className="recording-bar">
-            <button type="button" className="icon-btn recording-cancel" onClick={cancelRecording} title="Cancel">
-              🗑️
-            </button>
-            <span className="recording-dot" />
-            <span className="recording-timer">{formatDuration(recordingSeconds)}</span>
-            <span className="recording-hint">Recording voice message…</span>
-          </div>
-        ) : (
-          <input
-            type="text"
-            placeholder={pendingFile ? "Add a caption..." : "Type a message..."}
-            value={input}
-            onChange={handleInputChange}
-            disabled={isUploading}
-          />
-        )}
+        <AnimatePresence mode="wait">
+          {isRecording ? (
+            <motion.div 
+              className="recording-bar"
+              key="recording"
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              transition={{ duration: 0.2 }}
+            >
+              <motion.button 
+                type="button" 
+                className="icon-btn recording-cancel" 
+                onClick={cancelRecording} 
+                title="Cancel"
+                whileHover={{ scale: 1.2, rotate: 10 }}
+                whileTap={{ scale: 0.9 }}
+              >
+                🗑️
+              </motion.button>
+              <span className="recording-dot" />
+              <span className="recording-timer">{formatDuration(recordingSeconds)}</span>
+              <span className="recording-hint">Recording voice message…</span>
+            </motion.div>
+          ) : (
+            <motion.input
+              key="input"
+              type="text"
+              placeholder={pendingFile ? "Add a caption..." : "Type a message..."}
+              value={input}
+              onChange={handleInputChange}
+              disabled={isUploading}
+              initial={{ scale: 0.98, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.98, opacity: 0 }}
+              whileFocus={{ scale: 1.01 }}
+              transition={{ duration: 0.2 }}
+            />
+          )}
+        </AnimatePresence>
 
-        {isRecording ? (
-          <button type="button" className="icon-btn send-btn" onClick={stopRecordingAndSend} title="Send voice message">
-            <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M2 21l21-9L2 3v7l15 2-15 2z" /></svg>
-          </button>
-        ) : input.trim() || pendingFile ? (
-          <button type="submit" className="icon-btn send-btn" disabled={isUploading} title="Send">
-            {isUploading ? (
-              <span className="spinner spinner-sm" />
-            ) : (
+        <AnimatePresence mode="wait">
+          {isRecording ? (
+            <motion.button 
+              key="send-recording"
+              type="button" 
+              className="icon-btn send-btn" 
+              onClick={stopRecordingAndSend} 
+              title="Send voice message"
+              initial={{ scale: 0, rotate: -180 }}
+              animate={{ scale: 1, rotate: 0 }}
+              exit={{ scale: 0, rotate: 180 }}
+              whileHover={{ scale: 1.15 }}
+              whileTap={{ scale: 0.9 }}
+              transition={{ type: "spring", stiffness: 300 }}
+            >
               <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M2 21l21-9L2 3v7l15 2-15 2z" /></svg>
-            )}
-          </button>
-        ) : (
-          <button type="button" className="icon-btn mic-btn" onClick={startRecording} disabled={isUploading} title="Record voice message">
-            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z" />
-              <path d="M19 10v2a7 7 0 01-14 0v-2" />
-              <line x1="12" y1="19" x2="12" y2="23" />
-              <line x1="8" y1="23" x2="16" y2="23" />
-            </svg>
-          </button>
-        )}
-      </form>
+            </motion.button>
+          ) : input.trim() || pendingFile ? (
+            <motion.button 
+              key="send"
+              type="submit" 
+              className="icon-btn send-btn" 
+              disabled={isUploading} 
+              title="Send"
+              initial={{ scale: 0, rotate: -180 }}
+              animate={{ scale: 1, rotate: 0 }}
+              exit={{ scale: 0, rotate: 180 }}
+              whileHover={{ scale: 1.15, rotate: 45 }}
+              whileTap={{ scale: 0.9 }}
+              transition={{ type: "spring", stiffness: 300 }}
+            >
+              {isUploading ? (
+                <span className="spinner spinner-sm" />
+              ) : (
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M2 21l21-9L2 3v7l15 2-15 2z" /></svg>
+              )}
+            </motion.button>
+          ) : (
+            <motion.button 
+              key="mic"
+              type="button" 
+              className="icon-btn mic-btn" 
+              onClick={startRecording} 
+              disabled={isUploading} 
+              title="Record voice message"
+              initial={{ scale: 0, rotate: -180 }}
+              animate={{ scale: 1, rotate: 0 }}
+              exit={{ scale: 0, rotate: 180 }}
+              whileHover={{ scale: 1.15 }}
+              whileTap={{ scale: 0.9 }}
+              transition={{ type: "spring", stiffness: 300 }}
+            >
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z" />
+                <path d="M19 10v2a7 7 0 01-14 0v-2" />
+                <line x1="12" y1="19" x2="12" y2="23" />
+                <line x1="8" y1="23" x2="16" y2="23" />
+              </svg>
+            </motion.button>
+          )}
+        </AnimatePresence>
+      </motion.form>
         </>
       )}
 
@@ -1480,6 +1604,6 @@ export default function ChatWindow({ contact, onBack }) {
   </div>
 )}
 
-    </div>
+    </motion.div>
   );
 }
