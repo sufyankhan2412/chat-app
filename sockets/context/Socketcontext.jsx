@@ -7,7 +7,7 @@ export const useSocket = () => useContext(SocketContext);
 
 const SOCKET_URL = window.location.hostname.endsWith(".devtunnels.ms")
   ? import.meta.env.VITE_TUNNEL_SOCKET_URL
-  : import.meta.env.VITE_SOCKET_URL || "http://localhost:5000";
+  : import.meta.env.VITE_SOCKET_URL || "https://chat-app-0aam.onrender.com";
 
 export const SocketProvider = ({ children, token, user }) => {
   const socketRef = useRef(null);
