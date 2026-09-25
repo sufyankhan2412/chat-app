@@ -1,7 +1,10 @@
 const express = require("express");
 const Message = require("../models/Message");
 const { protect } = require("../middleware/Authmiddleware");
-const { uploadAttachment } = require("../middleware/upload");
+const { 
+  uploadAttachment, 
+  uploadToCloudinary 
+} = require("../middleware/upload");
 
 const router = express.Router();
 
@@ -69,7 +72,7 @@ async function sweepStalePendingDeletes(io) {
   }
 }
 
-// Uploads a chat attachment (image/video/voice/file) and returns its URL +
+// Uploads a chat attachment (image/video/voice/file) to Cloudinary and returns its URL +
 // metadata. This does NOT create a Message document or notify anyone —
 // it's a plain REST upload. The actual message gets created over the
 // socket connection (see socket/Socketmanager.js -> "sendMessage"), the
@@ -91,17 +94,38 @@ router.post("/upload", protect, (req, res, next) => {
     return res.status(400).json({ message: "No file uploaded" });
   }
 
-  const duration = req.body.duration ? Number(req.body.duration) : undefined;
+  try {
+    const type = req.body.type || "file";
+    const duration = req.body.duration ? Number(req.body.duration) : undefined;
 
-  res.status(201).json({
-    attachment: {
-      url: `/uploads/attachments/${req.file.filename}`,
-      fileName: req.file.originalname,
-      fileSize: req.file.size,
-      mimeType: req.file.mimetype,
-      ...(duration && !Number.isNaN(duration) ? { duration } : {}),
-    },
-  });
+    // Determine resource type for Cloudinary
+    let resourceType = "auto";
+    if (type === "image") resourceType = "image";
+    else if (type === "video" || type === "voice") resourceType = "video";
+    else resourceType = "raw";
+
+    // Upload to Cloudinary
+    const result = await uploadToCloudinary(req.file.buffer, {
+      folder: `chat-app/attachments/${type}`,
+      resourceType,
+      publicId: `${req.user._id}-${Date.now()}-${Math.round(Math.random() * 1e9)}`,
+    });
+
+    res.status(201).json({
+      attachment: {
+        url: result.secure_url,
+        fileName: req.file.originalname,
+        fileSize: req.file.size,
+        mimeType: req.file.mimetype,
+        ...(duration && !Number.isNaN(duration) ? { duration } : {}),
+      },
+    });
+  } catch (uploadError) {
+    console.error("Cloudinary attachment upload error:", uploadError);
+    res.status(500).json({ 
+      message: "Failed to upload attachment to cloud storage" 
+    });
+  }
 });
 
 router.get("/:userId", protect, async (req, res) => {

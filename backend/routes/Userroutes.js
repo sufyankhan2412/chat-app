@@ -5,7 +5,13 @@ const User = require("../models/User");
 const Contact = require("../models/Contact");
 const Message = require("../models/Message");
 const { protect } = require("../middleware/Authmiddleware");
-const { uploadAvatar, avatarsDir } = require("../middleware/upload");
+const { 
+  uploadAvatar, 
+  avatarsDir, 
+  uploadToCloudinary, 
+  deleteFromCloudinary, 
+  extractPublicId 
+} = require("../middleware/upload");
 
 const router = express.Router();
 
@@ -135,7 +141,7 @@ router.get("/contacts", protect, async (req, res) => {
 });
 
 // @route  PUT /api/users/profile
-// Update my own profile: username, "about" text, and/or a locally-uploaded avatar
+// Update my own profile: username, "about" text, and/or avatar upload to Cloudinary
 router.put(
   "/profile",
   protect,
@@ -171,13 +177,40 @@ router.put(
       }
 
       if (req.file) {
-        // Clean up the old avatar file, but only if it was a local upload
-        // (skip the auto-generated dicebear URL new users start with)
-        if (user.avatar && user.avatar.startsWith("/uploads/avatars/")) {
-          const oldPath = path.join(avatarsDir, path.basename(user.avatar));
-          fs.unlink(oldPath, () => {});
+        // Upload to Cloudinary
+        try {
+          const result = await uploadToCloudinary(req.file.buffer, {
+            folder: "chat-app/avatars",
+            resourceType: "image",
+            publicId: `${user._id}-${Date.now()}`,
+            transformation: [
+              { width: 500, height: 500, crop: "limit" },
+              { quality: "auto" },
+              { fetch_format: "auto" }
+            ]
+          });
+
+          // Delete old avatar from Cloudinary if it exists
+          if (user.avatar && user.avatar.includes("cloudinary.com")) {
+            const oldPublicId = extractPublicId(user.avatar);
+            if (oldPublicId) {
+              deleteFromCloudinary(oldPublicId, "image").catch(err => 
+                console.error("Failed to delete old avatar:", err)
+              );
+            }
+          } else if (user.avatar && user.avatar.startsWith("/uploads/avatars/")) {
+            // Clean up old local file if it exists
+            const oldPath = path.join(avatarsDir, path.basename(user.avatar));
+            fs.unlink(oldPath, () => {});
+          }
+
+          user.avatar = result.secure_url;
+        } catch (uploadError) {
+          console.error("Cloudinary upload error:", uploadError);
+          return res.status(500).json({ 
+            message: "Failed to upload avatar to cloud storage" 
+          });
         }
-        user.avatar = `/uploads/avatars/${req.file.filename}`;
       }
 
       await user.save();

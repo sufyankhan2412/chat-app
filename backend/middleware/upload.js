@@ -2,19 +2,14 @@ const fs = require("fs");
 const path = require("path");
 const multer = require("multer");
 const transcriptionWorker = require("../services/TranscriptionWorker");
+const { uploadToCloudinary, deleteFromCloudinary, extractPublicId } = require("../config/cloudinary");
 
-// backend/uploads/avatars — created automatically if it doesn't exist yet
+// Keep avatarsDir for backward compatibility (local development)
 const avatarsDir = path.join(__dirname, "..", "uploads", "avatars");
 fs.mkdirSync(avatarsDir, { recursive: true });
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, avatarsDir),
-  filename: (req, file, cb) => {
-    // req.user is set by the protect middleware, which must run before this
-    const ext = path.extname(file.originalname).toLowerCase();
-    cb(null, `${req.user._id}-${Date.now()}${ext}`);
-  },
-});
+// Use memory storage instead of disk storage for Cloudinary
+const avatarStorage = multer.memoryStorage();
 
 const ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
 
@@ -26,30 +21,19 @@ const fileFilter = (req, file, cb) => {
 };
 
 const uploadAvatar = multer({
-  storage,
+  storage: avatarStorage,
   fileFilter,
   limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
 });
 
 // ---------------------------------------------------------------------
 // Chat attachments: images, videos, voice notes, and arbitrary files.
-// Separate folder + separate multer instance from avatars because the
-// allowed types, size limit, and naming scheme are all different.
+// Use memory storage for Cloudinary upload
 // ---------------------------------------------------------------------
 const attachmentsDir = path.join(__dirname, "..", "uploads", "attachments");
 fs.mkdirSync(attachmentsDir, { recursive: true });
 
-const attachmentStorage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, attachmentsDir),
-  filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase();
-    // req.user is set by `protect`, which must run before this middleware.
-    // A random suffix (not just Date.now()) avoids collisions if two files
-    // land in the same millisecond, e.g. a multi-photo picker.
-    const unique = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
-    cb(null, `${req.user._id}-${unique}${ext}`);
-  },
-});
+const attachmentStorage = multer.memoryStorage();
 
 // Maps a message "type" (from the request body) to the mimetypes it accepts.
 // The upload route reads req.body.type to know which bucket to check against
@@ -238,4 +222,7 @@ module.exports = {
   uploadCallAudioChunk,
   saveCallAudioChunk,
   callAudioDir,
+  uploadToCloudinary,
+  deleteFromCloudinary,
+  extractPublicId,
 };
